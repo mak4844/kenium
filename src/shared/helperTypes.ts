@@ -1,3 +1,5 @@
+import type { ConnectionOptions } from 'aqualink'
+
 export type MaybePromise<T> = T | Promise<T>
 
 export type DeferReplyOptionsLike = boolean | number | { flags?: number }
@@ -88,9 +90,11 @@ export interface PlayerLike<TTrack = TrackLike> {
   skip?: () => unknown
   stop?: () => unknown
   destroy?: () => unknown
+  deaf?: boolean
+  mute?: boolean
+  connect?: (options?: ConnectionOptions) => unknown
   setLoop?: unknown
   setVolume?: (value: number) => MaybePromise<unknown>
-  connect?: unknown
 }
 
 export interface ResolveResultLike<TTrack = TrackLike> {

@@ -57,12 +57,12 @@ export const getOrCreatePlayer = (
       ? players.get(options.guildId)
       : undefined
   if (player && !player.destroyed && player.queue) {
-    if (
-      options.voiceChannel &&
-      player.voiceChannel !== options.voiceChannel &&
-      typeof player.connect === 'function'
-    ) {
-      player.connect(options)
+    if (options.voiceChannel && player.voiceChannel !== options.voiceChannel) {
+      player.connect?.({
+        guildId: options.guildId,
+        voiceChannel: options.voiceChannel,
+        ...(options.textChannel ? { textChannel: options.textChannel } : {})
+      })
     }
     if (options.textChannel && player.textChannel !== options.textChannel)
       player.textChannel = options.textChannel
