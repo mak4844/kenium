@@ -663,11 +663,11 @@ class VoiceManager {
 
     try {
       if (existing && !existing.destroyed) {
-        existing.connect({
+        existing.connect?.({
           guildId,
           voiceChannel: pair.voiceChannelId,
-          deaf: existing.deaf,
-          mute: existing.mute
+          deaf: existing.deaf ?? true,
+          mute: existing.mute ?? false
         })
       } else {
         const conn = createPlayerConnection(client, connectionOptions)

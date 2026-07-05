@@ -30,7 +30,7 @@ const tracksCol = () => getTracksCollection()
 const options = {
   playlist: createStringOption({
     description: 'Playlist name',
-    required: true,
+    required: false,
     autocomplete: async (interaction) =>
       handlePlaylistAutocomplete(interaction, playlistsCol())
   })
