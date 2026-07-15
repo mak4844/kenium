@@ -7,15 +7,14 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { isExpiredInteraction } from '../shared/errorGuard'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
 import {
   ensurePlayerForVoice,
   maybeStartPlayback,
   resolveAndQueue
-} from '../shared/playback'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+} from '../shared/playback.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const options = {
   tts: createStringOption({
@@ -26,7 +25,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Middlewares(['checkVoice'])
 @Declare({
   name: 'tts',

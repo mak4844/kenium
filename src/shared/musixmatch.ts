@@ -1,3 +1,3 @@
-import { Musixmatch } from '../utils/musiclyrics'
+import { Musixmatch } from '../utils/musiclyrics.ts'
 
 export const musixmatch = new Musixmatch()

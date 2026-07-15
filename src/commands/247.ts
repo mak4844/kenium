@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   Command,
   type CommandContext,
@@ -6,13 +6,19 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { resetRejoinBreaker } from '../events/voiceStateUpdate'
-import { EMBED_COLOR } from '../shared/constants'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { createPlayerConnection } from '../shared/player'
-import { getGuildSettings, updateGuildSettingsSync } from '../utils/db_helper'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+import {
+  refresh247Cache,
+  resetRejoinBreaker
+} from '../events/voiceStateUpdate.ts'
+import { EMBED_COLOR } from '../shared/constants.ts'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { createPlayerConnection } from '../shared/player.ts'
+import {
+  getGuildSettings,
+  updateGuildSettingsSync
+} from '../utils/db_helper.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const toBool = (v: unknown) =>
   v === true || v === 1 || v === '1' || v === 'true'
@@ -22,7 +28,7 @@ const NICKNAME_SUFFIX = ' [24/7]'
   name: '247',
   description: 'Keep the bot connected and prevent the player from timing out.'
 })
-@Cooldown({ type: CooldownType.User, interval: 60000, uses: { default: 2 } })
+@Cooldown.user(60000, { uses: 2 })
 @Middlewares(['cooldown', 'checkVoice'])
 export default class TwentyFourSevenCommand extends Command {
   public override async run(ctx: CommandContext): Promise<void> {
@@ -69,6 +75,7 @@ export default class TwentyFourSevenCommand extends Command {
         textChannelId: newEnabled ? ctx.channelId : null
       })
       if (newEnabled) resetRejoinBreaker(guildId)
+      refresh247Cache()
 
       void (async () => {
         try {

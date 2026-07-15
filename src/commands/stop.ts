@@ -5,8 +5,8 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 @Declare({
   name: 'stop',

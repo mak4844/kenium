@@ -5,14 +5,17 @@ import {
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { createEmbed, handlePlaylistAutocomplete } from '../../shared/utils'
+import {
+  createEmbed,
+  handlePlaylistAutocomplete,
+  invalidatePlaylistNameCache
+} from '../../shared/utils.ts'
 import {
   getDatabase,
   getPlaylistsCollection,
   getTracksCollection
-} from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
+} from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 const tracksCol = () => getTracksCollection()
@@ -37,7 +40,7 @@ const options = {
   name: 'delete',
   description: '🗑️ Delete a playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class DeleteCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { name: playlistName } = ctx.options as { name: string }
@@ -79,6 +82,7 @@ export class DeleteCommand extends SubCommand {
         playlistsCol().delete({ _id: playlistId })
       }
     })
+    invalidatePlaylistNameCache(userId)
 
     const embed = createEmbed(
       'success',

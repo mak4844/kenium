@@ -1,11 +1,13 @@
 import { createMiddleware, Embed } from 'seyfert'
+import { getPlayerVoiceChannelId } from '../shared/playback.ts'
+import { authorizeVoiceControl } from '../shared/voiceAuthorization.ts'
 import {
   getMemberVoiceState,
   isInteractionExpired
-} from '../utils/interactions'
+} from '../utils/interactions.ts'
 
 export const checkPlayer = createMiddleware<void>(
-  async ({ context, pass, next }) => {
+  async ({ context, stop, next }) => {
     if (!context.inGuild()) return next()
 
     const { client } = context
@@ -27,7 +29,7 @@ export const checkPlayer = createMiddleware<void>(
       } catch (err) {
         if (!isInteractionExpired(err)) throw err
       }
-      return pass()
+      return stop()
     }
 
     next()
@@ -35,20 +37,18 @@ export const checkPlayer = createMiddleware<void>(
 )
 
 export const checkVoice = createMiddleware<void>(
-  async ({ context, pass, next }) => {
-    if (!context.inGuild()) return next()
-
+  async ({ context, stop, next }) => {
     const memberVoice = await getMemberVoiceState(context)
-
-    const botId = context.client.botId
-    const botvoice = context.client.cache.voiceStates?.get(
-      botId,
-      context.guildId
-    )
-    if (
-      !memberVoice ||
-      (botvoice && botvoice.channelId !== memberVoice.channelId)
-    ) {
+    const player = context.inGuild()
+      ? context.client.aqua.players.get(context.guildId)
+      : null
+    const authorization = authorizeVoiceControl({
+      guildId: context.inGuild() ? context.guildId : null,
+      memberChannelId: memberVoice?.channelId ?? null,
+      playerChannelId: player ? getPlayerVoiceChannelId(player) : null,
+      hasPlayer: Boolean(player)
+    })
+    if (!authorization.ok) {
       try {
         await context.editOrReply({
           flags: 64,
@@ -63,7 +63,7 @@ export const checkVoice = createMiddleware<void>(
       } catch (err) {
         if (!isInteractionExpired(err)) throw err
       }
-      return pass()
+      return stop()
     }
 
     next()
@@ -71,7 +71,7 @@ export const checkVoice = createMiddleware<void>(
 )
 
 export const checkTrack = createMiddleware<void>(
-  async ({ context, pass, next }) => {
+  async ({ context, stop, next }) => {
     if (!context.inGuild()) return next()
 
     const { client } = context
@@ -93,7 +93,7 @@ export const checkTrack = createMiddleware<void>(
       } catch (err) {
         if (!isInteractionExpired(err)) throw err
       }
-      return pass()
+      return stop()
     }
 
     next()

@@ -6,14 +6,13 @@ import {
   LocalesT,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { getGuildLang, setGuildLang } from '../utils/db_helper'
+import { getGuildLang, setGuildLang } from '../utils/db_helper.ts'
 import {
   getContextLanguage,
   getLanguageChoices,
   getLanguageDisplayName
-} from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+} from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 type LanguageTextLike = {
   success?: {
@@ -75,7 +74,7 @@ const _functions = {
   defaultMemberPermissions: ['Administrator']
 })
 @LocalesT('commands.language.name', 'commands.language.description')
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export default class LanguageCommand extends Command {
   public override async run(ctx: CommandContext): Promise<void> {
     if (!(await safeDefer(ctx, true))) return

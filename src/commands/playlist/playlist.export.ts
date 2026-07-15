@@ -7,11 +7,10 @@ import {
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { playlistTracksToKeniumText } from '../../shared/playlist_format'
-import { handlePlaylistAutocomplete } from '../../shared/utils'
-import { getPlaylistsCollection, getTracksCollection } from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
+import { playlistTracksToKeniumText } from '../../shared/playlist_format.ts'
+import { handlePlaylistAutocomplete } from '../../shared/utils.ts'
+import { getPlaylistsCollection, getTracksCollection } from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
 
 const ICONS = {
   music: 'Music',
@@ -87,7 +86,7 @@ function createEmbed(
   name: 'export',
   description: 'Export a playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class ExportCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { name: playlistName } = ctx.options as { name: string }

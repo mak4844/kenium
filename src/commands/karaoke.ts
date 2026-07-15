@@ -1,25 +1,30 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import type { Player } from 'aqualink'
 import {
   ActionRow,
   Button,
+  ButtonStyle,
   Command,
   type CommandContext,
   Container,
   Declare,
+  MessageFlags,
   Middlewares,
+  Section,
   Separator,
-  TextDisplay
+  Spacing,
+  TextDisplay,
+  Thumbnail
 } from 'seyfert'
-import { ButtonStyle, MessageFlags, Spacing } from 'seyfert/lib/types'
 import {
   buildLyricsQueryFromHints,
   extractLyricsSearchHints
-} from '../shared/lyrics'
-import { musixmatch } from '../shared/musixmatch'
-import { formatDuration } from '../shared/utils'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+} from '../shared/lyrics.ts'
+import { musixmatch } from '../shared/musixmatch.ts'
+import { formatDuration } from '../shared/utils.ts'
+import { authorizeVoiceControl } from '../shared/voiceAuthorization.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { getMemberVoiceState, safeDefer } from '../utils/interactions.ts'
 
 const ACCENT_COLOR = '#100e09'
 const ERROR_COLOR = '#e74c3c'
@@ -28,15 +33,18 @@ const SESSION_TIMEOUT_MS = 300000
 const SONG_END_BUFFER_MS = 5000
 const AUTO_DELETE_MS = 10000
 
-const MAX_DRIFT_MS = 10000
-
-const MIN_EDIT_DELAY_MS = 2000
-const MAX_EDIT_DELAY_MS = 5000
+const MIN_TICK_DELAY_MS = 75
+const MAX_TICK_DELAY_MS = 5000
+const MIN_EDIT_INTERVAL_MS = 900
+const MIN_LINE_TRANSITION_INTERVAL_MS = 250
+const PROGRESS_EDIT_INTERVAL_MS = 1500
+const PAUSED_POLL_INTERVAL_MS = 750
 const SCHEDULER_JITTER_MS = 25
+const DEFAULT_LINE_DURATION_MS = 4000
 
 const VIEW_PAST_LINES = 1
 const VIEW_NEXT_LINES = 1
-const PROGRESS_BAR_LENGTH = 16
+const PROGRESS_BAR_LENGTH = 12
 
 type LyricLine = {
   line: string
@@ -58,9 +66,21 @@ interface KaraokeSession {
 
   fallbackStartPosition: number
   fallbackStartTime: number
+  artist: string
+  artworkUrl?: string | undefined
+  lastEditAt: number
+  lastRenderKey: string
   title: string
+  uri?: string | undefined
   trackKey: string
   stoppedByUser: boolean
+}
+
+interface KaraokeStageDetails {
+  artist: string
+  artworkUrl?: string | undefined
+  title: string
+  uri?: string | undefined
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: msg is a dynamic Discord message object
@@ -168,19 +188,51 @@ const _createProgressBar = (
   endMs: number
 ) => {
   const durationMs = endMs - startMs
-  if (durationMs <= 0) return `[${'>'.padEnd(PROGRESS_BAR_LENGTH, '=')}]`
+  if (durationMs <= 0) return `●${'─'.repeat(PROGRESS_BAR_LENGTH - 1)}`
 
-  const elapsedMs = currentMs - startMs
-  const progress = Math.max(0, Math.min(1, elapsedMs / durationMs))
-  const cursor = Math.min(
+  const cursor = _getProgressCursor(currentMs, startMs, endMs)
+  const chars = Array.from({ length: PROGRESS_BAR_LENGTH }, (_, index) => {
+    if (index === cursor) return '●'
+    return index < cursor ? '━' : '─'
+  })
+
+  return chars.join('')
+}
+
+const _getProgressCursor = (
+  currentMs: number,
+  startMs: number,
+  endMs: number
+) => {
+  const durationMs = endMs - startMs
+  if (durationMs <= 0) return 0
+  const progress = Math.max(0, Math.min(1, (currentMs - startMs) / durationMs))
+  return Math.min(
     PROGRESS_BAR_LENGTH - 1,
     Math.max(0, Math.round(progress * (PROGRESS_BAR_LENGTH - 1)))
   )
-  const chars = Array.from({ length: PROGRESS_BAR_LENGTH }, (_, index) =>
-    index === cursor ? '>' : '='
-  )
+}
 
-  return `[${chars.join('')}]`
+const _getRenderKey = (
+  lines: LyricLine[],
+  currentTimeMs: number,
+  isPaused: boolean
+) => {
+  const currentIdx = _findCurrentLineIndex(lines, currentTimeMs)
+  if (currentIdx < 0) {
+    const firstLine = lines[0]
+    const countdown = firstLine
+      ? Math.max(0, Math.ceil((_lineStartMs(firstLine) - currentTimeMs) / 1000))
+      : 0
+    return `pre:${countdown}:${isPaused}`
+  }
+
+  const current = lines[currentIdx]
+  if (!current) return `empty:${isPaused}`
+  const next = lines[currentIdx + 1]
+  const startMs = _lineStartMs(current)
+  const endMs = next ? _lineStartMs(next) : startMs + DEFAULT_LINE_DURATION_MS
+  return `${currentIdx}:${_getProgressCursor(currentTimeMs, startMs, endMs)}:${isPaused}`
 }
 
 const _formatViewportLine = (
@@ -192,11 +244,11 @@ const _formatViewportLine = (
 
   switch (kind) {
     case 'past':
-      return `-# LAST: ${text}`
+      return `-# ${text}`
     case 'current':
       return `## ${text}`
     case 'next':
-      return nextIndex === 0 ? `-# NEXT: ${text}` : `-# THEN: ${text}`
+      return nextIndex === 0 ? `**${text}**` : `-# ${text}`
   }
 }
 
@@ -206,7 +258,7 @@ const _createStatusLine = (
   endMs: number,
   isPaused: boolean
 ) => {
-  const state = isPaused ? 'HOLD' : 'LIVE'
+  const state = isPaused ? 'PAUSED' : 'LIVE'
   const remainingMs = Math.max(0, endMs - currentTimeMs)
   const nextIn =
     isPaused || remainingMs <= 0
@@ -214,13 +266,13 @@ const _createStatusLine = (
       : `${Math.max(0.1, remainingMs / 1000).toFixed(1)}s`
 
   return [
-    `### ${state} ${formatDuration(currentTimeMs)}  •  NEXT ${nextIn}`,
-    `-# ${_createProgressBar(currentTimeMs, startMs, endMs)}`
+    `-# ${state}  •  ${formatDuration(currentTimeMs)}  •  next line ${nextIn}`,
+    `\`${_createProgressBar(currentTimeMs, startMs, endMs)}\``
   ].join('\n')
 }
 
 const _createKaraokeStageContainer = (
-  title: string,
+  details: KaraokeStageDetails,
   lines: LyricLine[],
   currentTimeMs: number,
   isPaused: boolean
@@ -230,11 +282,25 @@ const _createKaraokeStageContainer = (
     .setLabel('Stop')
     .setStyle(ButtonStyle.Secondary)
 
+  const linkedTitle = details.uri
+    ? `[${details.title}](${details.uri})`
+    : details.title
+  const headerContent = [
+    '## KARAOKE',
+    `**${linkedTitle}**`,
+    `-# ${details.artist || 'Unknown artist'}  •  synchronized lyrics`
+  ].join('\n')
+  const header = details.artworkUrl
+    ? new Section()
+        .addComponents(new TextDisplay().setContent(headerContent))
+        .setAccessory(new Thumbnail().setMedia(details.artworkUrl))
+    : new TextDisplay().setContent(headerContent)
+
   if (!lines.length) {
     return new Container()
       .setColor(ACCENT_COLOR)
       .addComponents(
-        new TextDisplay().setContent('## KARAOKE STAGE'),
+        header,
         _divider(),
         new TextDisplay().setContent(
           'No time-synced lyrics available for this track.'
@@ -243,7 +309,6 @@ const _createKaraokeStageContainer = (
   }
 
   const currentIdx = _findCurrentLineIndex(lines, currentTimeMs)
-  const status = isPaused ? 'PAUSED' : 'LIVE'
 
   if (currentIdx < 0) {
     const firstLine = lines[0]
@@ -255,15 +320,17 @@ const _createKaraokeStageContainer = (
     const timeUntil = firstLine ? _lineStartMs(firstLine) - currentTimeMs : 0
     const countdown =
       timeUntil > 0
-        ? `-# Lyrics begin in ${Math.ceil(timeUntil / 1000)}s`
-        : '-# The next line is about to lock in'
+        ? `### Mic check\n-# Lyrics begin in ${Math.ceil(timeUntil / 1000)}s`
+        : '### Mic check\n-# Your first line is coming up'
 
     return new Container()
       .setColor(ACCENT_COLOR)
       .addComponents(
-        new TextDisplay().setContent(`-# ${title}  |  ${status}`),
+        header,
         _divider(),
-        new TextDisplay().setContent([countdown, '', previewText].join('\n')),
+        new TextDisplay().setContent(
+          [countdown, '', '-# FIRST UP', previewText].join('\n')
+        ),
         _divider(),
         new ActionRow().addComponents(stopButton)
       )
@@ -278,7 +345,7 @@ const _createKaraokeStageContainer = (
 
   const next = lines[currentIdx + 1]
   const segStart = _lineStartMs(current)
-  const segEnd = next ? _lineStartMs(next) : segStart + 4000
+  const segEnd = next ? _lineStartMs(next) : segStart + DEFAULT_LINE_DURATION_MS
 
   const pastStart = Math.max(0, currentIdx - VIEW_PAST_LINES)
   const past = lines.slice(pastStart, currentIdx)
@@ -300,6 +367,7 @@ const _createKaraokeStageContainer = (
 
   if (upcoming.length) {
     viewportParts.push('')
+    viewportParts.push('-# UP NEXT')
     viewportParts.push(
       upcoming
         .map((line, index) => _formatViewportLine(line, 'next', index))
@@ -307,13 +375,13 @@ const _createKaraokeStageContainer = (
     )
   } else if (currentIdx === lines.length - 1) {
     viewportParts.push('')
-    viewportParts.push('-# FINAL LINE: track ending soon')
+    viewportParts.push('-# FINAL LINE  •  bring it home')
   }
 
   return new Container()
     .setColor(ACCENT_COLOR)
     .addComponents(
-      new TextDisplay().setContent(`-# ${title}  |  ${status}`),
+      header,
       _divider(),
       new TextDisplay().setContent(viewportParts.join('\n')),
       _divider(),
@@ -424,40 +492,42 @@ const karaokeOrphanTimer = setInterval(() => {
 }, KARAOKE_ORPHAN_CLEANUP_INTERVAL)
 if (karaokeOrphanTimer.unref) karaokeOrphanTimer.unref()
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 60000,
-  uses: { default: 2 }
-})
+@Cooldown.user(60000, { uses: 2 })
 @Declare({
   name: 'karaoke',
   description: 'Start a karaoke session with synced lyrics'
 })
 @Middlewares(['cooldown', 'checkPlayer', 'checkVoice', 'checkTrack'])
 export default class KaraokeCommand extends Command {
-  private _getCurrentTimeMs(session: KaraokeSession): number {
+  private _getCurrentTimeMs(
+    session: KaraokeSession,
+    isPaused: boolean
+  ): number {
     const player = session.player
+    const position = player?.position
+    const timestamp = player?.timestamp
 
-    if (
-      player?.position !== undefined &&
-      player?.position !== null &&
-      player?.timestamp !== undefined &&
-      player?.timestamp !== null
-    ) {
-      const driftMs = Date.now() - player.timestamp
+    if (typeof position === 'number' && Number.isFinite(position)) {
+      if (isPaused) return Math.max(0, position)
 
-      if (driftMs >= 0 && driftMs < MAX_DRIFT_MS) {
-        return player.position + driftMs
+      if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
+        const elapsedMs = Math.max(0, Date.now() - timestamp)
+        const estimatedPosition = position + elapsedMs
+        const trackLength = player.current?.info?.length
+        return Math.max(
+          0,
+          typeof trackLength === 'number' && Number.isFinite(trackLength)
+            ? Math.min(estimatedPosition, trackLength)
+            : estimatedPosition
+        )
       }
-      return player.position
+
+      return Math.max(0, position)
     }
 
-    if (player?.position !== undefined && player?.position !== null) {
-      return player.position
-    }
-
+    if (isPaused) return Math.max(0, session.fallbackStartPosition)
     const elapsedMs = Date.now() - session.fallbackStartTime
-    return session.fallbackStartPosition + elapsedMs
+    return Math.max(0, session.fallbackStartPosition + elapsedMs)
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: player is a dynamic player object
@@ -470,41 +540,43 @@ export default class KaraokeCommand extends Command {
     currentTimeMs: number,
     isPaused: boolean
   ) {
-    if (isPaused) return 1500
+    if (isPaused) return PAUSED_POLL_INTERVAL_MS
 
     const lines = session.lines
     if (!lines.length) return 1000
 
     const idx = _findCurrentLineIndex(lines, currentTimeMs)
-    const safeIdx = Math.max(0, idx)
+    if (idx < 0) {
+      const firstLine = lines[0]
+      if (!firstLine) return 1000
+      const timeUntilFirstLine = _lineStartMs(firstLine) - currentTimeMs
+      const countdownBoundary = timeUntilFirstLine % 1000
+      return Math.max(
+        MIN_TICK_DELAY_MS,
+        Math.min(
+          MAX_TICK_DELAY_MS,
+          Math.min(timeUntilFirstLine, countdownBoundary || 1000) +
+            SCHEDULER_JITTER_MS
+        )
+      )
+    }
 
-    const current = lines[safeIdx]
+    const current = lines[idx]
     if (!current) return 1000
-    const next = lines[safeIdx + 1]
+    const next = lines[idx + 1]
 
     const segStart = _lineStartMs(current)
-    const segEnd = next ? _lineStartMs(next) : segStart + 4000
+    const segEnd = next
+      ? _lineStartMs(next)
+      : segStart + DEFAULT_LINE_DURATION_MS
 
     const duration = segEnd - segStart
-    if (duration <= 0) return 500
+    if (duration <= 0) return MIN_TICK_DELAY_MS
 
-    const rawProgress = (currentTimeMs - segStart) / duration
-    const progress = Math.max(0, Math.min(0.999999, rawProgress))
-
-    const bucket = Math.floor(progress * PROGRESS_BAR_LENGTH)
-    const nextBucket = Math.min(PROGRESS_BAR_LENGTH, bucket + 1)
-
-    const nextBucketTime =
-      segStart + (nextBucket / PROGRESS_BAR_LENGTH) * duration
-    const nextLineTime = segEnd
-
-    const nextEventTime = Math.min(nextBucketTime, nextLineTime)
-
-    let delay = nextEventTime - currentTimeMs + SCHEDULER_JITTER_MS
-    if (!Number.isFinite(delay)) delay = 1000
-
-    delay = Math.max(MIN_EDIT_DELAY_MS, Math.min(MAX_EDIT_DELAY_MS, delay))
-    return delay
+    const timeToNextLine = Math.max(0, segEnd - currentTimeMs)
+    const delay =
+      Math.min(timeToNextLine, PROGRESS_EDIT_INTERVAL_MS) + SCHEDULER_JITTER_MS
+    return Math.max(MIN_TICK_DELAY_MS, Math.min(MAX_TICK_DELAY_MS, delay))
   }
 
   private _scheduleNextTick(guildId: string, delayMs: number, errorCount = 0) {
@@ -537,8 +609,8 @@ export default class KaraokeCommand extends Command {
       return
     }
 
-    const currentTimeMs = this._getCurrentTimeMs(session)
     const isPaused = this._isPlayerPaused(session.player)
+    const currentTimeMs = this._getCurrentTimeMs(session, isPaused)
     const currentTrackKey = _getTrackKey(session.player.current)
 
     if (!currentTrackKey || currentTrackKey !== session.trackKey) {
@@ -554,8 +626,40 @@ export default class KaraokeCommand extends Command {
       return
     }
 
+    const renderKey = _getRenderKey(session.lines, currentTimeMs, isPaused)
+    const timeSinceLastEdit = Date.now() - session.lastEditAt
+    const isLineTransition =
+      renderKey.split(':', 1)[0] !== session.lastRenderKey.split(':', 1)[0]
+    const minimumEditInterval = isLineTransition
+      ? MIN_LINE_TRANSITION_INTERVAL_MS
+      : MIN_EDIT_INTERVAL_MS
+
+    if (renderKey === session.lastRenderKey) {
+      const delay = this._computeNextEditDelayMs(
+        session,
+        currentTimeMs,
+        isPaused
+      )
+      this._scheduleNextTick(guildId, delay, 0)
+      return
+    }
+
+    if (timeSinceLastEdit < minimumEditInterval) {
+      this._scheduleNextTick(
+        guildId,
+        minimumEditInterval - timeSinceLastEdit + SCHEDULER_JITTER_MS,
+        0
+      )
+      return
+    }
+
     const container = _createKaraokeStageContainer(
-      session.title,
+      {
+        artist: session.artist,
+        artworkUrl: session.artworkUrl,
+        title: session.title,
+        uri: session.uri
+      },
       session.lines,
       currentTimeMs,
       isPaused
@@ -566,6 +670,8 @@ export default class KaraokeCommand extends Command {
         components: [container],
         flags: MessageFlags.IsComponentsV2
       })
+      session.lastEditAt = Date.now()
+      session.lastRenderKey = renderKey
     } catch (error) {
       const err = error as { code?: number }
       if (err.code === 10065 || err.code === 10008) {
@@ -637,12 +743,25 @@ export default class KaraokeCommand extends Command {
       return
     }
 
-    const title = player.current?.title ?? 'Karaoke'
+    const title = result.track?.title || player.current?.title || 'Karaoke'
+    const artist =
+      result.track?.author || player.current?.author || 'Unknown artist'
+    const artworkUrl =
+      result.track?.albumArt ||
+      player.current?.info?.artworkUrl ||
+      player.current?.thumbnail ||
+      undefined
+    const uri = player.current?.info?.uri || player.current?.uri || undefined
     const initialPosition = player.position ?? 0
     const isPaused = this._isPlayerPaused(player)
+    const initialRenderKey = _getRenderKey(
+      result.lines,
+      initialPosition,
+      isPaused
+    )
 
     const container = _createKaraokeStageContainer(
-      title,
+      { artist, artworkUrl, title, uri },
       result.lines,
       initialPosition,
       isPaused
@@ -672,19 +791,29 @@ export default class KaraokeCommand extends Command {
     collector.run(
       'ignore_karaoke-stop',
       async (i: {
+        guildId?: string | null
+        member?: { voice?: unknown } | null
         user: { id: string }
+        client?: unknown
         write: (opts: { content: string; flags: number }) => Promise<void>
       }) => {
         const session = KaraokeSessionRegistry.get(guildId)
+        const currentPlayer = ctx.client.aqua.players.get(guildId)
+        const memberVoice = await getMemberVoiceState({
+          ...i,
+          guildId,
+          client: ctx.client
+        })
+        const authorization = authorizeVoiceControl({
+          guildId,
+          memberChannelId: memberVoice?.channelId ?? null,
+          playerChannelId: currentPlayer?.voiceChannel ?? null,
+          hasPlayer: Boolean(currentPlayer),
+          requirePlayer: true,
+          playerDestroyed: currentPlayer?.destroyed === true
+        })
 
-        const member = ctx.client.cache.members?.get(i.user.id, guildId)
-        const memberVoice =
-          member &&
-          'voice' in member &&
-          (member as { voice?: { channelId?: string } }).voice?.channelId
-        const playerVoice = session?.player?.voiceChannel
-
-        if (playerVoice && memberVoice && memberVoice !== playerVoice) {
+        if (!authorization.ok || !session || session.player !== currentPlayer) {
           await i.write({
             content: 'You must be in the voice channel to stop karaoke.',
             flags: 64
@@ -692,9 +821,7 @@ export default class KaraokeCommand extends Command {
           return
         }
 
-        if (session) {
-          session.stoppedByUser = true
-        }
+        session.stoppedByUser = true
 
         await KaraokeSessionRegistry.cleanup(guildId, 'stopped')
 
@@ -722,7 +849,12 @@ export default class KaraokeCommand extends Command {
       collector,
       fallbackStartPosition: initialPosition,
       fallbackStartTime: Date.now(),
+      artist,
+      artworkUrl,
+      lastEditAt: Date.now(),
+      lastRenderKey: initialRenderKey,
       title,
+      uri,
       trackKey: _getTrackKey(player.current),
       stoppedByUser: false
     })

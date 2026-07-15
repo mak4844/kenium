@@ -5,7 +5,7 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { getContextLanguage } from '../utils/i18n'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 @Declare({
   name: 'roulette',

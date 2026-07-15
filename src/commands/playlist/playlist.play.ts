@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   type CommandContext,
   createBooleanOption,
@@ -8,26 +8,29 @@ import {
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ICONS } from '../../shared/constants'
+import {
+  decidePlaylistPlayer,
+  enqueueTracksAndCount
+} from '../../events/playlistPlayback.ts'
+import { ICONS } from '../../shared/constants.ts'
 import type {
   PlayerLike,
   ResolveResultLike,
   TrackLike,
   UserLike
-} from '../../shared/helperTypes'
-import { getOrCreatePlayer } from '../../shared/player'
-import { buildTrackResolveQueries } from '../../shared/playlist_format'
-import type { Track } from '../../shared/types'
+} from '../../shared/helperTypes.ts'
+import { getOrCreatePlayer } from '../../shared/player.ts'
+import { buildTrackResolveQueries } from '../../shared/playlist_format.ts'
+import type { Track } from '../../shared/types.ts'
 import {
   createEmbed,
   formatDuration,
   handlePlaylistAutocomplete,
   shuffleArray
-} from '../../shared/utils'
-import { getPlaylistsCollection, getTracksCollection } from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
-import { safeDefer } from '../../utils/interactions'
+} from '../../shared/utils.ts'
+import { getPlaylistsCollection, getTracksCollection } from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
+import { safeDefer } from '../../utils/interactions.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 const tracksCol = () => getTracksCollection()
@@ -183,8 +186,8 @@ const _functions = {
   name: 'play',
   description: '🎵 Play a playlist'
 })
-@Options(options as unknown as OptionsRecord)
-@Cooldown({ type: CooldownType.User, interval: 20000, uses: { default: 2 } })
+@Options(options)
+@Cooldown.user(20000, { uses: 2 })
 @Middlewares(['checkVoice'])
 export class PlayCommand extends SubCommand {
   async run(ctx: CommandContext) {
@@ -246,11 +249,30 @@ export class PlayCommand extends SubCommand {
     }
 
     try {
-      const player = getOrCreatePlayer(ctx.client, {
-        guildId: ctx.guildId as string,
-        voiceChannel: voiceState.channelId,
-        textChannel: ctx.channelId
-      }) as PlayerLike | undefined
+      const guildId = ctx.guildId as string
+      const existingPlayer = ctx.client.aqua.players.get(guildId) as
+        | PlayerLike
+        | undefined
+      const playerDecision = decidePlaylistPlayer(
+        existingPlayer,
+        voiceState.channelId
+      )
+      if (playerDecision.action === 'reject') {
+        return _functions.editError(
+          ctx,
+          tp?.playFailed || 'Play Failed',
+          'You must be in the same voice channel as the player.'
+        )
+      }
+      const player = (
+        playerDecision.action === 'reuse'
+          ? existingPlayer
+          : getOrCreatePlayer(ctx.client, {
+              guildId,
+              voiceChannel: voiceState.channelId,
+              textChannel: ctx.channelId
+            })
+      ) as PlayerLike | undefined
       if (!player) {
         return _functions.editError(
           ctx,
@@ -263,14 +285,14 @@ export class PlayCommand extends SubCommand {
       const total = dbTracks.length
       const tracks = shuffle ? shuffleArray(dbTracks.slice()) : dbTracks
 
-      const loadedTracks = await _functions.resolveTracksConcurrently(
+      const resolvedTracks = await _functions.resolveTracksConcurrently(
         tracks,
         MAX_RESOLVE_CONCURRENCY,
         (track) =>
           _functions.resolveTrack(ctx.client.aqua, track, ctx.interaction.user)
       )
 
-      if (!loadedTracks.length) {
+      if (!resolvedTracks.length) {
         return _functions.editError(
           ctx,
           tp?.loadFailed || 'Load Failed',
@@ -279,9 +301,22 @@ export class PlayCommand extends SubCommand {
         )
       }
 
-      const queue = player.queue
-      for (const tr of loadedTracks) {
-        if (typeof queue?.add === 'function') queue.add(tr)
+      const loadedCount = await enqueueTracksAndCount(
+        resolvedTracks,
+        (track) => {
+          if (typeof player.queue?.add !== 'function')
+            throw new Error('Player queue is unavailable')
+          return player.queue.add(track)
+        }
+      )
+
+      if (loadedCount === 0) {
+        return _functions.editError(
+          ctx,
+          tp?.loadFailed || 'Load Failed',
+          tp?.loadFailedDesc ||
+            'Could not load any tracks from this playlist. The tracks may no longer be available.'
+        )
       }
 
       try {
@@ -298,7 +333,7 @@ export class PlayCommand extends SubCommand {
 
       if (!player.playing && !player.paused) player.play?.().catch(() => {})
 
-      const failedCount = total - loadedTracks.length
+      const failedCount = total - loadedCount
 
       return ctx.editOrReply({
         embeds: [
@@ -318,7 +353,7 @@ export class PlayCommand extends SubCommand {
               },
               {
                 name: `${ICONS.tracks} ${tp?.loaded || 'Loaded'}`,
-                value: `${loadedTracks.length}/${total} tracks`,
+                value: `${loadedCount}/${total} tracks`,
                 inline: true
               },
               {
@@ -342,7 +377,7 @@ export class PlayCommand extends SubCommand {
               },
               {
                 name: `${ICONS.tracks} ${tp?.inQueue || 'In Queue'}`,
-                value: `${player.queue?.size ?? loadedTracks.length} track(s)`,
+                value: `${player.queue?.size ?? loadedCount} track(s)`,
                 inline: true
               }
             ]

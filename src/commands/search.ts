@@ -7,19 +7,20 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { MUSIC_PLATFORMS } from '../shared/emojis'
-import { isExpiredInteraction } from '../shared/errorGuard'
+import { MUSIC_PLATFORMS } from '../shared/emojis.ts'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
 import type {
   ComponentCollectorLike,
   ComponentCollectorSourceLike,
   InteractionLike,
   PlayerLike,
   TrackLike
-} from '../shared/helperTypes'
-import { ensurePlayerForVoice, maybeStartPlayback } from '../shared/playback'
-import { formatDuration, truncate } from '../shared/utils'
-import { getContextLanguage } from '../utils/i18n'
+} from '../shared/helperTypes.ts'
+import { ensurePlayerForVoice, maybeStartPlayback } from '../shared/playback.ts'
+import { formatDuration, truncate } from '../shared/utils.ts'
+import { authorizeVoiceControl } from '../shared/voiceAuthorization.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { getMemberVoiceState } from '../utils/interactions.ts'
 
 const CONFIG = Object.freeze({
   INTERACTION_TIMEOUT: 45000,
@@ -140,7 +141,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Middlewares(['checkVoice'])
 @Declare({
   name: 'search',
@@ -197,14 +198,7 @@ export default class SearchCommand extends Command {
         true
       )) as SearchMessageLike
 
-      this.setupInteractionHandler(
-        message,
-        ctx,
-        player,
-        cleanQuery,
-        tracks,
-        thele
-      )
+      this.setupInteractionHandler(message, ctx, cleanQuery, tracks, thele)
     } catch (error: unknown) {
       console.error('Search command error:', error)
       if (isExpiredInteraction(error)) return
@@ -357,7 +351,6 @@ export default class SearchCommand extends Command {
   private setupInteractionHandler(
     message: SearchMessageLike,
     ctx: CommandContext,
-    player: PlayerLike,
     query: string,
     tracks: SearchTrackLike[],
     thele: SearchTextLike
@@ -393,7 +386,7 @@ export default class SearchCommand extends Command {
         async (interaction: SearchInteractionLike) => {
           try {
             await interaction.deferUpdate()
-            await this.handleTrackSelection(interaction, player, tracks, thele)
+            await this.handleTrackSelection(interaction, ctx, tracks, thele)
           } catch (error) {
             console.error('Track selection error:', error)
           }
@@ -425,10 +418,34 @@ export default class SearchCommand extends Command {
 
   private async handleTrackSelection(
     i: SearchInteractionLike,
-    player: PlayerLike,
+    ctx: CommandContext,
     tracks: SearchTrackLike[],
     thele: SearchTextLike
   ): Promise<void> {
+    const guildId = i.guildId ?? ctx.guildId
+    const player = guildId
+      ? (ctx.client.aqua.players.get(guildId) as PlayerLike | undefined)
+      : undefined
+    const memberVoice = await getMemberVoiceState(i)
+    const authorization = authorizeVoiceControl({
+      guildId,
+      memberChannelId: memberVoice?.channelId ?? null,
+      playerChannelId: player?.voiceChannel ?? null,
+      hasPlayer: Boolean(player),
+      requirePlayer: true,
+      playerDestroyed: player?.destroyed === true
+    })
+    if (!authorization.ok || !player) {
+      await i.followup(
+        {
+          content:
+            'You must be in the same voice channel as the active player.',
+          flags: 64
+        },
+        true
+      )
+      return
+    }
     const trackIndex = parseInt(i.customId.split('_')[2] || '-1', 10)
     const track = tracks[trackIndex]
 

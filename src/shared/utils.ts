@@ -1,11 +1,10 @@
-import { ActionRow, Button, Embed } from 'seyfert'
-import { ButtonStyle } from 'seyfert/lib/types'
-import { lru } from 'tiny-lru'
-import { getPlaylistTracks } from '../utils/db'
-import { COLORS, ICONS } from './constants'
+import { ActionRow, Button, ButtonStyle, Embed } from 'seyfert'
+import { getPlaylistTracks } from '../utils/db.ts'
+import { COLORS, ICONS } from './constants.ts'
+import { createPlaylistNameCache } from './playlistNameCache.ts'
 
 const MAX_AUTOCOMPLETE_OPTIONS = 25
-const PLAYLIST_NAME_CACHE = lru<string[]>(200, 30_000) // 200 users, 30s TTL
+const PLAYLIST_NAME_CACHE = createPlaylistNameCache()
 const MAX_EMBED_FIELDS = 25
 const MAX_BUTTONS_PER_ROW = 5
 
@@ -61,9 +60,9 @@ type ButtonConfig = {
   disabled?: boolean
 }
 
-type AutocompleteOption = {
+type AutocompleteOption<Value extends string | number = string> = {
   name: string
-  value: string
+  value: Value
 }
 
 type PlaylistNameLike = {
@@ -94,9 +93,9 @@ type PlaylistCollectionLike = {
   }) => PlaylistRecordLike | null | undefined
 }
 
-type AutocompleteInteractionLike = {
+type AutocompleteInteractionLike<Value extends string | number = string> = {
   user?: { id?: string }
-  respond: (options: AutocompleteOption[]) => Promise<unknown> | unknown
+  respond: (options: AutocompleteOption<Value>[]) => Promise<unknown> | unknown
   getInput?: () => unknown
   options: {
     getString: (name: string) => string | null
@@ -222,6 +221,9 @@ export const handlePlaylistAutocomplete = async (
   return interaction.respond(options)
 }
 
+export const invalidatePlaylistNameCache = (userId: string) =>
+  PLAYLIST_NAME_CACHE.invalidate(userId)
+
 export const handleTrackAutocomplete = async (
   interaction: AutocompleteInteractionLike
 ) => {
@@ -260,12 +262,12 @@ export const handleTrackAutocomplete = async (
 }
 
 export const handleTrackIndexAutocomplete = async (
-  interaction: AutocompleteInteractionLike,
+  interaction: AutocompleteInteractionLike<number>,
   playlistsCollection: PlaylistCollectionLike
 ) => {
   const playlistName = interaction.options.getString('playlist')
   if (!playlistName) {
-    return interaction.respond([{ name: 'Select playlist first', value: '0' }])
+    return interaction.respond([{ name: 'Select playlist first', value: 0 }])
   }
 
   const playlist = playlistsCollection.findOne({
@@ -276,7 +278,7 @@ export const handleTrackIndexAutocomplete = async (
   })
 
   if (!playlist) {
-    return interaction.respond([{ name: 'Playlist not found', value: '0' }])
+    return interaction.respond([{ name: 'Playlist not found', value: 0 }])
   }
 
   const tracks = getPlaylistTracks(playlist._id, {
@@ -285,12 +287,12 @@ export const handleTrackIndexAutocomplete = async (
   })
 
   if (tracks.length === 0) {
-    return interaction.respond([{ name: 'No Tracks', value: '0' }])
+    return interaction.respond([{ name: 'No Tracks', value: 0 }])
   }
 
   const options = tracks.map((track, index) => ({
     name: `${index + 1}. ${String(track.title || 'Untitled').slice(0, 80)}`,
-    value: String(index + 1)
+    value: index + 1
   }))
 
   return interaction.respond(options)

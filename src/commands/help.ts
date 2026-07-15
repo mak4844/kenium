@@ -1,8 +1,8 @@
 import { Command, type CommandContext, Container, Declare } from 'seyfert'
-import { EMBED_COLOR } from '../shared/constants'
-import type { InteractionLike } from '../shared/helperTypes'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+import { EMBED_COLOR } from '../shared/constants.ts'
+import type { InteractionLike } from '../shared/helperTypes.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const COMMANDS_PER_PAGE = 4
 const EPHEMERAL_FLAG = 64 | 32768

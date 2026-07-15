@@ -2,8 +2,8 @@ import {
   getDatabase,
   getPlaylistsCollection,
   getTracksCollection
-} from './collections'
-import { migrateDatabase } from './migration'
+} from './collections.ts'
+import { migrateDatabase } from './migration.ts'
 
 let _initialized = false
 let initPromise: Promise<void> | null = null
@@ -13,7 +13,7 @@ export {
   getPlaylistsCollection,
   getSettingsCollection,
   getTracksCollection
-} from './collections'
+} from './collections.ts'
 
 export async function initDatabase(): Promise<void> {
   if (_initialized) return

@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   Command,
   type CommandContext,
@@ -8,14 +8,14 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
 import {
   ensurePlayerForVoice,
   maybeStartPlayback,
   resolveAndQueue
-} from '../shared/playback'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+} from '../shared/playback.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 @Options({
   file: createAttachmentOption({
@@ -27,13 +27,7 @@ import { safeDefer } from '../utils/interactions'
   name: 'play-file',
   description: 'Play a file from your computer.'
 })
-@Cooldown({
-  type: CooldownType.User,
-  interval: 1000 * 60,
-  uses: {
-    default: 2
-  }
-})
+@Cooldown.user(1000 * 60, { uses: 2 })
 @Middlewares(['cooldown', 'checkVoice'])
 export default class PlayFile extends Command {
   public override async run(ctx: CommandContext) {

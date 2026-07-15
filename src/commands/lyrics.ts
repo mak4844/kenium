@@ -1,27 +1,27 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   ActionRow,
   Button,
+  ButtonStyle,
   Command,
   type CommandContext,
+  ComponentType,
   createStringOption,
   Declare,
   Embed,
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ButtonStyle, ComponentType } from 'seyfert/lib/types'
 import {
   buildLyricsQueryFromHints,
   extractLyricsSearchHints,
   pickLyricsArtwork
-} from '../shared/lyrics'
-import { musixmatch } from '../shared/musixmatch'
-import { formatDuration } from '../shared/utils'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
-import type { LyricsLine } from '../utils/musiclyrics'
+} from '../shared/lyrics.ts'
+import { musixmatch } from '../shared/musixmatch.ts'
+import { formatDuration } from '../shared/utils.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
+import type { LyricsLine } from '../utils/musiclyrics.ts'
 
 const MAX_EMBED_LENGTH = 1800
 const MAX_SYNC_LINES_PER_PAGE = 18
@@ -337,12 +337,8 @@ const options = {
   })
 }
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 60_000,
-  uses: { default: 2 }
-})
-@Options(options as unknown as OptionsRecord)
+@Cooldown.user(60_000, { uses: 2 })
+@Options(options)
 @Declare({
   name: 'lyrics',
   description: 'Get lyrics for the current song or search'

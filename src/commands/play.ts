@@ -7,18 +7,17 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
 import { LRU } from 'tiny-lru'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import type { PlayerLike, TrackLike, UserLike } from '../shared/helperTypes'
-import { ensurePlayerForVoice, maybeStartPlayback } from '../shared/playback'
-import { truncate } from '../shared/utils'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import type { PlayerLike, TrackLike, UserLike } from '../shared/helperTypes.ts'
+import { ensurePlayerForVoice, maybeStartPlayback } from '../shared/playback.ts'
+import { truncate } from '../shared/utils.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 import {
   getErrorCode,
   isInteractionExpired,
   safeDefer
-} from '../utils/interactions'
+} from '../utils/interactions.ts'
 
 const RECENT_CACHE_SIZE = 8
 const USER_CACHE_LIMIT = 150
@@ -321,7 +320,7 @@ const options = {
 }
 
 @Declare({ name: 'play', description: 'Play a song by search query or URL.' })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Middlewares(['checkVoice'])
 export default class Play extends Command {
   public override async run(ctx: CommandContext): Promise<void> {

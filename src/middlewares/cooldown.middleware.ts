@@ -1,20 +1,17 @@
-import { createMiddleware, Formatter } from 'seyfert'
-import { TimestampStyle } from 'seyfert/lib/common'
+import type { CooldownResult } from '@slipher/cooldown'
+import { type AnyContext, createMiddleware, Formatter } from 'seyfert'
 
-export const cooldownMiddleware = createMiddleware<void>(
-  async ({ context, next }) => {
-    const cooldown = context.client.cooldown as unknown as {
-      context: (ctx: typeof context) => unknown
-    }
-    const inCooldown = cooldown.context(context)
+export const cooldownMiddleware = createMiddleware<
+  CooldownResult | undefined,
+  AnyContext
+>(async ({ context, next, stop }) => {
+  const result = await context.cooldown.consume()
 
-    if (typeof inCooldown === 'number') {
-      return context.write({
-        content: `You're in cooldown, try again ${Formatter.timestamp(new Date(Date.now() + inCooldown), TimestampStyle.RelativeTime)}`,
-        flags: 64
-      })
-    }
+  if (!result || result.allowed) return next(result)
 
-    return next()
-  }
-)
+  await context.write({
+    content: `You're in cooldown, try again ${Formatter.timestamp(result.retryAfter)}`,
+    flags: 64
+  })
+  stop()
+})

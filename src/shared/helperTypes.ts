@@ -44,7 +44,7 @@ export interface TrackLike {
   duration?: number
   thumbnail?: string | null
   info?: TrackInfoLike
-  requester?: UserLike | null
+  requester?: unknown
 }
 
 export interface EditableMessageLike {
@@ -84,7 +84,7 @@ export interface PlayerLike<TTrack = TrackLike> {
   current?: TTrack | null
   previous?: TTrack | null
   queue?: QueueLike<TTrack>
-  nowPlayingMessage?: EditableMessageLike | null
+  nowPlayingMessage?: unknown
   play?: () => Promise<unknown>
   pause?: (paused: boolean) => MaybePromise<unknown>
   skip?: () => unknown
@@ -137,6 +137,8 @@ export interface InteractionLike {
     replied?: unknown
   }
   isButton?: () => boolean
+  isStringSelectMenu?: () => boolean
+  values?: string[]
   deferReply: unknown
   deferUpdate?: () => Promise<unknown>
   editOrReply: unknown

@@ -1,5 +1,5 @@
 import { cpus, loadavg } from 'node:os'
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   Command,
   type CommandContext,
@@ -7,7 +7,7 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { state } from '../../index'
+import { state } from '../../index.ts'
 
 const CPU_CACHE = {
   model: cpus()[0]?.model.replace(/®|™/g, '').trim().split('@') || [],
@@ -94,11 +94,7 @@ async function getBannerURL(client: StatusClientLike): Promise<string | null> {
   name: 'status',
   description: 'status of the bot'
 })
-@Cooldown({
-  type: CooldownType.User,
-  interval: 1000 * 60,
-  uses: { default: 2 }
-})
+@Cooldown.user(1000 * 60, { uses: 2 })
 @Middlewares(['cooldown'])
 export default class statusCmds extends Command {
   public override async run(ctx: CommandContext): Promise<void> {

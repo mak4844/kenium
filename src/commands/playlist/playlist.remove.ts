@@ -6,21 +6,25 @@ import {
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ICONS } from '../../shared/constants'
+import { ICONS } from '../../shared/constants.ts'
 import {
   createEmbed,
   extractYouTubeId,
   handlePlaylistAutocomplete,
   handleTrackIndexAutocomplete
-} from '../../shared/utils'
+} from '../../shared/utils.ts'
 import {
   getDatabase,
   getPlaylistsCollection,
   getPlaylistTracks,
   getTracksCollection
-} from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
+} from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
+import {
+  calculatePlaylistAggregate,
+  playlistLockKey,
+  withPlaylistMutationLock
+} from '../../utils/playlistMutations.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 const tracksCol = () => getTracksCollection()
@@ -61,7 +65,7 @@ const options = {
   name: 'remove',
   description: '❌ Remove a track from a playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class RemoveCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { playlist: playlistName, index } = ctx.options as {
@@ -101,12 +105,91 @@ export class RemoveCommand extends SubCommand {
       })
     }
 
-    const totalTracks =
-      typeof playlist.trackCount === 'number'
-        ? playlist.trackCount
-        : tracksCol().count({ playlistId: playlist._id })
+    let totalTracks = 0
+    let removedTrack: ReturnType<typeof getPlaylistTracks>[number] | undefined
+    let mutationResult: 'removed' | 'invalid-index' | 'not-found' = 'not-found'
 
-    if (index < 1 || index > totalTracks) {
+    try {
+      mutationResult = await withPlaylistMutationLock(
+        playlistLockKey(userId, playlistName),
+        () => {
+          const currentPlaylist = playlistsCol().findOne(
+            { userId, name: playlistName },
+            { fields: ['_id'] }
+          )
+          if (!currentPlaylist) return 'not-found' as const
+
+          totalTracks = tracksCol().count({ playlistId: currentPlaylist._id })
+          if (index < 1 || index > totalTracks) return 'invalid-index' as const
+
+          removedTrack = getPlaylistTracks(currentPlaylist._id, {
+            limit: 1,
+            skip: index - 1,
+            fields: ['title', 'author', 'source', 'uri', 'duration']
+          })[0]
+          if (!removedTrack) return 'invalid-index' as const
+
+          getDatabase().transaction(() => {
+            const deleted = tracksCol().delete({ _id: removedTrack?._id })
+            if (deleted !== 1) {
+              throw new Error(
+                'Track was not deleted; playlist metadata unchanged'
+              )
+            }
+            const aggregate = calculatePlaylistAggregate(
+              tracksCol().find(
+                { playlistId: currentPlaylist._id },
+                { fields: ['duration'] }
+              )
+            )
+            const updated = playlistsCol().update(
+              { _id: currentPlaylist._id },
+              {
+                lastModified: new Date().toISOString(),
+                ...aggregate
+              }
+            )
+            if (updated !== 1)
+              throw new Error('Playlist metadata was not updated')
+            totalTracks = aggregate.trackCount
+          })
+          return 'removed' as const
+        }
+      )
+    } catch (dbError) {
+      console.error('Failed to update playlist after track removal:', dbError)
+      return ctx.write({
+        embeds: [
+          createEmbed(
+            'error',
+            t?.removeFailed || 'Remove Failed',
+            (t?.removeFailedDesc || 'Could not remove track: {error}').replace(
+              '{error}',
+              dbError instanceof Error ? dbError.message : 'Unknown error'
+            )
+          )
+        ],
+        flags: 64
+      })
+    }
+
+    if (mutationResult === 'not-found') {
+      return ctx.write({
+        embeds: [
+          createEmbed(
+            'error',
+            t?.notFound || 'Playlist Not Found',
+            (t?.notFoundDesc || 'No playlist named "{name}" exists!').replace(
+              '{name}',
+              playlistName
+            )
+          )
+        ],
+        flags: 64
+      })
+    }
+
+    if (mutationResult === 'invalid-index') {
       return ctx.write({
         embeds: [
           createEmbed(
@@ -121,14 +204,6 @@ export class RemoveCommand extends SubCommand {
       })
     }
 
-    // Fetch just the track at that index (Deterministic due to addedAt sort in getPlaylistTracks)
-    const tracks = getPlaylistTracks(playlist._id, {
-      limit: 1,
-      skip: index - 1,
-      fields: ['title', 'author', 'source', 'uri', 'duration']
-    })
-    const removedTrack = tracks[0]
-
     if (!removedTrack) {
       return ctx.write({
         embeds: [
@@ -136,42 +211,6 @@ export class RemoveCommand extends SubCommand {
             'error',
             t?.notFound || 'Track Not Found',
             'Could not find the track at that index.'
-          )
-        ],
-        flags: 64
-      })
-    }
-
-    const timestamp = new Date().toISOString()
-    const newTotalDuration = Math.max(
-      0,
-      (playlist.totalDuration || 0) - (removedTrack.duration || 0)
-    )
-
-    // Use atomic operation with proper error handling
-    try {
-      getDatabase().transaction(() => {
-        tracksCol().delete({ _id: removedTrack._id })
-        playlistsCol().update(
-          { _id: playlist._id },
-          {
-            lastModified: timestamp,
-            totalDuration: newTotalDuration,
-            trackCount: Math.max(0, totalTracks - 1)
-          }
-        )
-      })
-    } catch (dbError) {
-      console.error('Failed to update playlist after track removal:', dbError)
-      return ctx.write({
-        embeds: [
-          createEmbed(
-            'error',
-            t?.removeFailed || 'Remove Failed',
-            (t?.removeFailedDesc || 'Could not remove track: {error}').replace(
-              '{error}',
-              dbError instanceof Error ? dbError.message : 'Unknown error'
-            )
           )
         ],
         flags: 64
@@ -196,7 +235,7 @@ export class RemoveCommand extends SubCommand {
       },
       {
         name: `${ICONS.tracks} ${t?.remaining || 'Remaining'}`,
-        value: `${totalTracks - 1} tracks`,
+        value: `${totalTracks} tracks`,
         inline: true
       }
     ])

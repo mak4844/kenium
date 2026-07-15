@@ -1,4 +1,4 @@
-import type { LyricsSearchHints } from '../utils/musiclyrics'
+import type { LyricsSearchHints } from '../utils/musiclyrics.ts'
 
 type TrackInfoLike = {
   title?: unknown

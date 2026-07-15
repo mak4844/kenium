@@ -1,5 +1,5 @@
 import type { CommandContext } from 'seyfert'
-import { getErrorCode, isInteractionExpired } from '../utils/interactions'
+import { getErrorCode, isInteractionExpired } from '../utils/interactions.ts'
 
 export function withErrorGuard(
   run: (ctx: CommandContext) => Promise<void>

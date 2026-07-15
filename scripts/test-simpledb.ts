@@ -1,4 +1,4 @@
-import { SimpleDB } from '../src/utils/simpleDB'
+import { SimpleDB } from '../src/utils/simpleDB.ts'
 
 async function main() {
   try {
@@ -23,6 +23,25 @@ async function main() {
 
     const found = col.findById(doc._id)
     console.log('Found after update:', found)
+
+    const hotCol = db.collection('hotmix', {
+      columns: { name: 'TEXT' }
+    })
+    const suffix = String(Date.now())
+    const oldName = `old-${suffix}`
+    const newName = `new-${suffix}`
+    const mixed = hotCol.insert({ name: oldName, extra: 'before' })
+    const mixedDoc = Array.isArray(mixed) ? mixed[0] : mixed
+    if (!mixedDoc) throw new Error('Hot-column insert returned no document')
+
+    hotCol.update({ _id: mixedDoc._id }, { name: newName, extra: 'after' })
+
+    const foundByNewName = hotCol.findOne({ name: newName })
+    const foundByOldName = hotCol.findOne({ name: oldName })
+    if (foundByNewName?._id !== mixedDoc._id || foundByOldName) {
+      throw new Error('Mixed hot/non-hot update desynchronized indexes')
+    }
+    console.log('Mixed hot/non-hot update: ok')
 
     db.close()
     process.exit(0)

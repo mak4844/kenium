@@ -1,4 +1,3 @@
-// @ts-expect-error bun runtime module
 import { Database } from 'bun:sqlite'
 import { mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'

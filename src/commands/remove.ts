@@ -7,10 +7,9 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import type { PlayerLike, TrackLike } from '../shared/helperTypes'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import type { PlayerLike, TrackLike } from '../shared/helperTypes.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 function formatTrackName(name: string) {
   return name.length <= 100 ? name : `${name.substring(0, 97)}...`
@@ -69,7 +68,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Middlewares(['checkPlayer', 'checkVoice'])
 @Declare({
   name: 'remove',

@@ -7,9 +7,8 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 const options = {
   volume: createIntegerOption({
@@ -20,7 +19,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 
 @Declare({
   name: 'volume',

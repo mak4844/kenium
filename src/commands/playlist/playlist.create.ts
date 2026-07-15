@@ -1,18 +1,26 @@
 import {
+  ButtonStyle,
   type CommandContext,
   createStringOption,
   Declare,
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ButtonStyle } from 'seyfert/lib/types'
-import { ICONS, LIMITS } from '../../shared/constants'
-import type { Playlist } from '../../shared/types'
-import { createButtons, createEmbed } from '../../shared/utils'
-import { getPlaylistsCollection } from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
-import { generateSortableId } from '../../utils/simpleDB'
+import { ICONS, LIMITS } from '../../shared/constants.ts'
+import type { Playlist } from '../../shared/types.ts'
+import {
+  createButtons,
+  createEmbed,
+  invalidatePlaylistNameCache
+} from '../../shared/utils.ts'
+import { getPlaylistsCollection } from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
+import {
+  userPlaylistsLockKey,
+  validatePlaylistCreation,
+  withPlaylistMutationLock
+} from '../../utils/playlistMutations.ts'
+import { generateSortableId } from '../../utils/simpleDB.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 
@@ -39,7 +47,7 @@ const options = {
   name: 'create',
   description: 'Create a new playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class CreateCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { name } = ctx.options as { name: string }
@@ -50,7 +58,7 @@ export class CreateCommand extends SubCommand {
       }
     ).playlist?.create
 
-    if (name.length > LIMITS.MAX_NAME_LENGTH) {
+    if (validatePlaylistCreation(name, 0) === 'name-too-long') {
       return ctx.write({
         embeds: [
           createEmbed(
@@ -66,15 +74,38 @@ export class CreateCommand extends SubCommand {
       })
     }
 
-    const existing = playlistsCol().findOne(
-      {
-        userId,
-        name
-      },
-      { fields: ['_id'] }
+    const creation = await withPlaylistMutationLock(
+      userPlaylistsLockKey(userId),
+      () => {
+        const existing = playlistsCol().findOne(
+          { userId, name },
+          { fields: ['_id'] }
+        )
+        if (existing) return 'exists' as const
+
+        const validation = validatePlaylistCreation(
+          name,
+          playlistsCol().count({ userId })
+        )
+        if (validation) return validation
+
+        const timestamp = new Date().toISOString()
+        const playlist: Playlist = {
+          _id: generateSortableId(),
+          userId,
+          name,
+          createdAt: timestamp,
+          lastModified: timestamp,
+          playCount: 0,
+          totalDuration: 0,
+          trackCount: 0
+        }
+        playlistsCol().insert(playlist)
+        return null
+      }
     )
 
-    if (existing) {
+    if (creation === 'exists') {
       return ctx.write({
         embeds: [
           createEmbed(
@@ -89,9 +120,7 @@ export class CreateCommand extends SubCommand {
       })
     }
 
-    const userPlaylistCount = playlistsCol().count({ userId })
-
-    if (userPlaylistCount >= LIMITS.MAX_PLAYLISTS) {
+    if (creation === 'playlist-limit') {
       return ctx.write({
         embeds: [
           createEmbed(
@@ -107,19 +136,7 @@ export class CreateCommand extends SubCommand {
       })
     }
 
-    const timestamp = new Date().toISOString()
-    const playlist: Playlist = {
-      _id: generateSortableId(),
-      userId,
-      name,
-      createdAt: timestamp,
-      lastModified: timestamp,
-      playCount: 0,
-      totalDuration: 0,
-      trackCount: 0
-    }
-
-    playlistsCol().insert(playlist)
+    invalidatePlaylistNameCache(userId)
 
     const embed = createEmbed(
       'success',
@@ -139,21 +156,28 @@ export class CreateCommand extends SubCommand {
       ]
     )
 
-    const buttons = createButtons([
-      {
-        id: `add_track_${name}_${userId}`,
-        label: t?.addTracks || 'Add Tracks',
-        emoji: ICONS.add,
-        style: ButtonStyle.Success
-      },
-      {
-        id: `view_playlist_${name}_${userId}`,
-        label: t?.viewPlaylist || 'View Playlist',
-        emoji: ICONS.playlist,
-        style: ButtonStyle.Primary
-      }
-    ])
+    embed.addFields({
+      name: `${ICONS.info} Next Steps`,
+      value: `Use \`/playlists add playlist:${name}\` to add tracks.`
+    })
 
-    return ctx.write({ embeds: [embed], components: [buttons], flags: 64 })
+    const created = playlistsCol().findOne(
+      { userId, name },
+      { fields: ['_id'] }
+    )
+    const components = created
+      ? [
+          createButtons([
+            {
+              id: `playlist:view:${created._id}:${userId}`,
+              label: t?.viewPlaylist || 'View Playlist',
+              emoji: ICONS.playlist,
+              style: ButtonStyle.Primary
+            }
+          ])
+        ]
+      : []
+
+    return ctx.write({ embeds: [embed], components, flags: 64 })
   }
 }

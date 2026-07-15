@@ -1,5 +1,5 @@
 import type { CommandContext } from 'seyfert'
-import { getGuildLang } from './db_helper'
+import { getGuildLang } from './db_helper.ts'
 
 const VALID_LANGS = new Set([
   'en',

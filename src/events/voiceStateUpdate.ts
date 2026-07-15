@@ -1,19 +1,24 @@
 import process from 'node:process'
 import { createEvent, Embed } from 'seyfert'
 import { lru } from 'tiny-lru'
-import { cleanupKaraokeSession, hasKaraokeSession } from '../commands/karaoke'
+import {
+  cleanupKaraokeSession,
+  hasKaraokeSession
+} from '../commands/karaoke.ts'
 import type {
   AquaClientLike,
   PlayerLike,
   TrackLike
-} from '../shared/helperTypes'
-import { createPlayerConnection } from '../shared/player'
+} from '../shared/helperTypes.ts'
+import { createPlayerConnection } from '../shared/player.ts'
+import { isSupportedVoiceChannelType } from '../shared/voiceLifecycle.ts'
 import {
   disable247Sync,
   get247ChannelIds,
   getAll247Settings,
   isTwentyFourSevenEnabled
-} from '../utils/db_helper'
+} from '../utils/db_helper.ts'
+import { cleanupResumedReconnectTimers } from './resumed.ts'
 
 const NO_SONG_TIMEOUT = 600000
 const REJOIN_DELAY = 5000
@@ -244,13 +249,13 @@ const _functions = {
     const channels = guild.channels
     let ch =
       typeof channels?.get === 'function' ? channels.get(channelId) : undefined
-    if (ch) return ch.type === 2 ? ch : null
+    if (ch) return isSupportedVoiceChannelType(ch.type) ? ch : null
     try {
       ch =
         typeof channels?.fetch === 'function'
           ? await channels.fetch(channelId)
           : undefined
-      return ch?.type === 2 ? ch : null
+      return ch && isSupportedVoiceChannelType(ch.type) ? ch : null
     } catch {
       return null
     }
@@ -384,10 +389,6 @@ class VoiceManager {
             if (st === STATE_IDLE) this.states.delete(gid)
             if (this.states.size <= Math.floor(MAX_STATES_ENTRIES * 0.8)) break
           }
-        }
-        for (const [gid, pending] of this.pending) {
-          if (pending.timer) _functions.clearTimer(pending.timer)
-          this.pending.delete(gid)
         }
       } catch {}
       this.setupCleanup()
@@ -707,36 +708,37 @@ class VoiceManager {
           if (!current || current.playing || isTwentyFourSevenEnabled(guildId))
             return
 
-          const embed = new Embed()
-            .setColor(0x100e09)
-            .setDescription(
-              'No song added in 10 minutes, disconnecting...\nUse `/247` to keep the bot in VC.'
-            )
-            .setFooter({ text: 'Automatically destroying player' })
-
-          try {
-            if (!current.textChannel) return
-            const messages = client.messages as
-              | {
-                  write?: (
-                    channelId: string,
-                    payload: { embeds: Embed[] }
-                  ) => Promise<MessageLike | undefined>
-                }
-              | undefined
-            const msg =
-              typeof messages?.write === 'function'
-                ? await messages.write(current.textChannel, {
-                    embeds: [embed]
-                  })
-                : undefined
-            if (msg?.id)
-              this.setTimeout(
-                `msg_${msg.id}`,
-                () => _functions.safeDelete(msg, guildId),
-                10000
+          if (current.textChannel) {
+            const embed = new Embed()
+              .setColor(0x100e09)
+              .setDescription(
+                'No song added in 10 minutes, disconnecting...\nUse `/247` to keep the bot in VC.'
               )
-          } catch {}
+              .setFooter({ text: 'Automatically destroying player' })
+
+            try {
+              const messages = client.messages as
+                | {
+                    write?: (
+                      channelId: string,
+                      payload: { embeds: Embed[] }
+                    ) => Promise<MessageLike | undefined>
+                  }
+                | undefined
+              const msg =
+                typeof messages?.write === 'function'
+                  ? await messages.write(current.textChannel, {
+                      embeds: [embed]
+                    })
+                  : undefined
+              if (msg?.id)
+                this.setTimeout(
+                  `msg_${msg.id}`,
+                  () => _functions.safeDelete(msg, guildId),
+                  10000
+                )
+            } catch {}
+          }
 
           current.destroy?.()
         })()
@@ -766,6 +768,7 @@ class VoiceManager {
   }
 
   cleanup() {
+    cleanupResumedReconnectTimers()
     this.stopped = true
     for (const t of this.timeouts.values()) _functions.clearTimer(t)
     for (const pending of this.pending.values())
@@ -802,6 +805,11 @@ export default createEvent({
 export const resetRejoinBreaker = (guildId: string) => {
   manager.breaker.reset(guildId)
   manager.autoDisabled247.delete(guildId)
+}
+
+/** Invalidate cached guild data after 24/7 settings change. */
+export const refresh247Cache = () => {
+  manager.guildCache.clear()
 }
 
 /** Reconnect all 24/7 players across all guilds. */

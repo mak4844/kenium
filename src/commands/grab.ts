@@ -1,7 +1,7 @@
 import { Command, type CommandContext, Declare, Middlewares } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { createNowPlayingContainer } from '../shared/nowPlaying'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { createNowPlayingContainer } from '../shared/nowPlaying.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 @Declare({
   name: 'grab',
@@ -43,7 +43,9 @@ export default class Grab extends Command {
         title: song.title,
         uri: song.uri,
         length: song.length,
-        requesterName: song.requester?.username || 'Unknown',
+        requesterName:
+          (song.requester as { username?: string } | undefined)?.username ||
+          'Unknown',
         artworkUrl
       })
 

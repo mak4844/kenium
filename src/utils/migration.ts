@@ -3,7 +3,7 @@ import {
   getPlaylistsCollection,
   getSettingsCollection,
   getTracksCollection
-} from './collections'
+} from './collections.ts'
 
 const SCHEMA_VERSION = 3
 

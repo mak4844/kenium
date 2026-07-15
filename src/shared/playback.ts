@@ -1,12 +1,13 @@
 import { lru } from 'tiny-lru'
-import { getErrorCode, getMemberVoiceState } from '../utils/interactions'
+import { getErrorCode, getMemberVoiceState } from '../utils/interactions.ts'
 import type {
   AquaClientLike,
   InteractionLike,
   PlayerLike,
   UserLike
-} from './helperTypes'
-import { getOrCreatePlayer } from './player'
+} from './helperTypes.ts'
+import { getOrCreatePlayer } from './player.ts'
+import { authorizeVoiceControl } from './voiceAuthorization.ts'
 
 // Cache recent Lavalink resolve results to avoid double-resolving
 // (autocomplete + actual play often resolve the same query)
@@ -128,26 +129,29 @@ export const ensureMemberCanControlPlayer = async (
 ) => {
   const memberVoice = await getMemberVoiceState(interaction)
   const memberVoiceChannelId = memberVoice?.channelId || null
-  if (!memberVoiceChannelId) {
-    return {
-      ok: false,
-      reason: 'You must be in a voice channel to use this button.'
-    }
-  }
   const playerVoiceChannelId = getPlayerVoiceChannelId(player)
-  if (playerVoiceChannelId && memberVoiceChannelId !== playerVoiceChannelId) {
+  const requesterId = (
+    player?.current?.requester as { id?: string } | undefined
+  )?.id
+  const authorization = authorizeVoiceControl({
+    guildId: interaction.guildId,
+    memberChannelId: memberVoiceChannelId,
+    playerChannelId: playerVoiceChannelId,
+    hasPlayer: true,
+    requesterOnly: Boolean(options.requesterOnly),
+    memberId: interaction.user.id,
+    requesterId: requesterId ?? null
+  })
+  if (!authorization.ok) {
+    const reason =
+      authorization.reason === 'requester'
+        ? 'You are not allowed to use this button.'
+        : authorization.reason === 'player-channel'
+          ? 'You must be in the same voice channel as the player.'
+          : 'You must be in a voice channel to use this button.'
     return {
       ok: false,
-      reason: 'You must be in the same voice channel as the player.'
-    }
-  }
-  if (
-    options.requesterOnly &&
-    interaction.user.id !== player?.current?.requester?.id
-  ) {
-    return {
-      ok: false,
-      reason: 'You are not allowed to use this button.'
+      reason
     }
   }
   return { ok: true, memberVoiceChannelId, playerVoiceChannelId }

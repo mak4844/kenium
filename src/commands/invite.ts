@@ -1,5 +1,5 @@
 import { Command, type CommandContext, Container, Declare } from 'seyfert'
-import { getContextLanguage } from '../utils/i18n'
+import { getContextLanguage } from '../utils/i18n.ts'
 @Declare({
   name: 'invite',
   description: 'invite kenium cuz yes.'

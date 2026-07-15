@@ -8,17 +8,31 @@ import {
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { parsePlaylistFile } from '../../shared/playlist_format'
-import type { Playlist, Track } from '../../shared/types'
-import { determineSource, formatDuration } from '../../shared/utils'
+import { LIMITS } from '../../shared/constants.ts'
+import { isExpiredInteraction } from '../../shared/errorGuard.ts'
+import { fetchImportFile, ImportFileError } from '../../shared/importFile.ts'
+import { parsePlaylistFile } from '../../shared/playlist_format.ts'
+import type { Playlist, Track } from '../../shared/types.ts'
+import {
+  determineSource,
+  formatDuration,
+  invalidatePlaylistNameCache
+} from '../../shared/utils.ts'
 import {
   getDatabase,
   getPlaylistsCollection,
   getTracksCollection
-} from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
-import { generateSortableId } from '../../utils/simpleDB'
+} from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
+import { safeDefer } from '../../utils/interactions.ts'
+import {
+  calculatePlaylistAggregate,
+  limitImportedTracks,
+  userPlaylistsLockKey,
+  validatePlaylistCreation,
+  withPlaylistMutationLock
+} from '../../utils/playlistMutations.ts'
+import { generateSortableId } from '../../utils/simpleDB.ts'
 
 const ICONS = {
   music: 'Music',
@@ -51,6 +65,8 @@ type PlaylistImportTextLike = {
   name?: string
   tracks?: string
   duration?: string
+  limitReached?: string
+  maxPlaylists?: string
 }
 
 type ImportedTrackLike = {
@@ -135,7 +151,7 @@ function isValidTrack(
   name: 'import',
   description: 'Import a playlist from a JSON file'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class ImportCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { file: attachment, name: providedName } = ctx.options as {
@@ -150,8 +166,9 @@ export class ImportCommand extends SubCommand {
     ).playlist?.import
 
     try {
-      const response = await fetch(attachment.url)
-      const fileContent = await response.text()
+      if (!(await safeDefer(ctx, true))) return
+
+      const fileContent = await fetchImportFile(attachment)
       const data = parsePlaylistFile(
         fileContent,
         providedName || DEFAULT_IMPORTED_PLAYLIST_NAME
@@ -175,7 +192,7 @@ export class ImportCommand extends SubCommand {
         })
       }
 
-      const validTracks = data.tracks.filter(isValidTrack)
+      const validTracks = limitImportedTracks(data.tracks.filter(isValidTrack))
       if (validTracks.length === 0) {
         return ctx.write({
           embeds: [
@@ -190,11 +207,81 @@ export class ImportCommand extends SubCommand {
       }
 
       const playlistName = providedName || DEFAULT_IMPORTED_PLAYLIST_NAME
-      const existing = playlistsCol().findOne({
-        userId,
-        name: playlistName
-      })
-      if (existing) {
+      if (validatePlaylistCreation(playlistName, 0) === 'name-too-long') {
+        return ctx.write({
+          embeds: [
+            createEmbed(
+              'error',
+              t?.invalidFile || 'Invalid Playlist Name',
+              `Playlist name must be at most ${LIMITS.MAX_NAME_LENGTH} characters.`
+            )
+          ],
+          flags: 64
+        })
+      }
+
+      const timestamp = new Date().toISOString()
+      const tracksToInsert: Track[] = validTracks.map((track, index) => ({
+        _id: generateSortableId(),
+        playlistId: '',
+        title: track.title,
+        uri:
+          track.uri ||
+          track.identifier ||
+          track.isrc ||
+          `${track.title} ${track.author}`,
+        author: track.author,
+        duration: track.duration || 0,
+        addedAt: new Date(Date.now() + index).toISOString(),
+        addedBy: userId,
+        source: track.source || determineSource(track.uri || ''),
+        identifier:
+          track.identifier ||
+          (track.isrc
+            ? `isrc:${track.isrc}`
+            : `${track.title} ${track.author}`),
+        isrc: track.isrc || null
+      }))
+
+      let aggregate = calculatePlaylistAggregate(tracksToInsert)
+      const importResult = await withPlaylistMutationLock(
+        userPlaylistsLockKey(userId),
+        () => {
+          if (playlistsCol().findOne({ userId, name: playlistName })) {
+            return 'exists' as const
+          }
+          const validation = validatePlaylistCreation(
+            playlistName,
+            playlistsCol().count({ userId })
+          )
+          if (validation) return validation
+
+          getDatabase().transaction(() => {
+            const playlistId = generateSortableId()
+            for (const track of tracksToInsert) track.playlistId = playlistId
+            const insertedPlaylist: Playlist = {
+              _id: playlistId,
+              userId,
+              name: playlistName,
+              description: data.description || 'Imported playlist',
+              createdAt: timestamp,
+              lastModified: timestamp,
+              playCount: 0,
+              totalDuration: 0,
+              trackCount: 0
+            }
+            playlistsCol().insert(insertedPlaylist)
+            tracksCol().insert(tracksToInsert)
+            aggregate = calculatePlaylistAggregate(
+              tracksCol().find({ playlistId }, { fields: ['duration'] })
+            )
+            playlistsCol().update({ _id: playlistId }, aggregate)
+          })
+          return null
+        }
+      )
+
+      if (importResult === 'exists') {
         return ctx.write({
           embeds: [
             createEmbed(
@@ -209,71 +296,22 @@ export class ImportCommand extends SubCommand {
           flags: 64
         })
       }
-
-      const timestamp = new Date().toISOString()
-      const totalDuration = validTracks.reduce(
-        (sum, track) => sum + (track.duration || 0),
-        0
-      )
-
-      try {
-        getDatabase().transaction(() => {
-          const insertedPlaylist: Playlist = {
-            _id: generateSortableId(),
-            userId,
-            name: playlistName,
-            description: data.description || 'Imported playlist',
-            createdAt: timestamp,
-            lastModified: timestamp,
-            playCount: 0,
-            totalDuration,
-            trackCount: validTracks.length
-          }
-
-          playlistsCol().insert(insertedPlaylist)
-
-          const tracksToInsert: Track[] = validTracks.map((track) => ({
-            _id: generateSortableId(),
-            playlistId: insertedPlaylist._id,
-            title: track.title,
-            uri:
-              track.uri ||
-              track.identifier ||
-              track.isrc ||
-              `${track.title} ${track.author}`,
-            author: track.author,
-            duration: track.duration || 0,
-            addedAt: timestamp,
-            addedBy: userId,
-            source: track.source || determineSource(track.uri || ''),
-            identifier:
-              track.identifier ||
-              (track.isrc
-                ? `isrc:${track.isrc}`
-                : `${track.title} ${track.author}`),
-            isrc: track.isrc || null
-          }))
-
-          tracksCol().insert(tracksToInsert)
-        })
-      } catch (dbError) {
-        console.error('Database error importing playlist:', dbError)
+      if (importResult === 'playlist-limit') {
         return ctx.write({
           embeds: [
             createEmbed(
               'error',
-              t?.importFailed || 'Import Failed',
+              t?.limitReached || 'Playlist Limit Reached',
               (
-                t?.importFailedDesc || 'Could not save playlist: {error}'
-              ).replace(
-                '{error}',
-                dbError instanceof Error ? dbError.message : 'Unknown error'
-              )
+                t?.maxPlaylists ||
+                'You can only have a maximum of {max} playlists.'
+              ).replace('{max}', String(LIMITS.MAX_PLAYLISTS))
             )
           ],
           flags: 64
         })
       }
+      invalidatePlaylistNameCache(userId)
 
       const embed = createEmbed(
         'success',
@@ -287,12 +325,12 @@ export class ImportCommand extends SubCommand {
           },
           {
             name: `${ICONS.tracks} ${t?.tracks || 'Tracks'}`,
-            value: String(validTracks.length),
+            value: String(aggregate.trackCount),
             inline: true
           },
           {
             name: `${ICONS.duration} ${t?.duration || 'Duration'}`,
-            value: formatDuration(totalDuration),
+            value: formatDuration(aggregate.totalDuration),
             inline: true
           }
         ]
@@ -300,22 +338,30 @@ export class ImportCommand extends SubCommand {
 
       await ctx.write({ embeds: [embed], flags: 64 })
     } catch (error) {
+      if (isExpiredInteraction(error)) return
       console.error('Import playlist error:', error)
-      await ctx.write({
-        embeds: [
-          createEmbed(
-            'error',
-            t?.importFailed || 'Import Failed',
-            (
-              t?.importFailedDesc || 'Could not import playlist: {error}'
-            ).replace(
-              '{error}',
-              error instanceof Error ? error.message : 'Unknown error'
+      try {
+        await ctx.write({
+          embeds: [
+            createEmbed(
+              'error',
+              t?.importFailed || 'Import Failed',
+              error instanceof ImportFileError
+                ? error.message
+                : (
+                    t?.importFailedDesc || 'Could not import playlist: {error}'
+                  ).replace(
+                    '{error}',
+                    error instanceof Error ? error.message : 'Unknown error'
+                  )
             )
-          )
-        ],
-        flags: 64
-      })
+          ],
+          flags: 64
+        })
+      } catch (responseError) {
+        if (isExpiredInteraction(responseError)) return
+        throw responseError
+      }
     }
   }
 }

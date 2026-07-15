@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   Command,
   type CommandContext,
@@ -6,16 +6,18 @@ import {
   Declare,
   Middlewares
 } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
 import type {
   ComponentCollectorSourceLike,
   InteractionLike,
   PlayerLike,
   QueueLike,
   TrackLike
-} from '../shared/helperTypes'
-import { formatDuration, truncate } from '../shared/utils'
-import { getContextLanguage } from '../utils/i18n'
+} from '../shared/helperTypes.ts'
+import { formatDuration, truncate } from '../shared/utils.ts'
+import { authorizeVoiceControl } from '../shared/voiceAuthorization.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { getMemberVoiceState } from '../utils/interactions.ts'
 
 const TRACKS_PER_PAGE = 5
 const EPHEMERAL_FLAG = 64 | (32768 as const)
@@ -84,9 +86,10 @@ function formatTrackMeta(
   opts: { includeRequester?: boolean } = {}
 ): string {
   const artist = truncate(track.info?.author ?? thele.common.unknown, 36)
+  const requesterId = (track.requester as { id?: string } | undefined)?.id
   const requester =
-    opts.includeRequester && track.requester?.id
-      ? ` • ${thele.player.requestedBy} <@${track.requester.id}>`
+    opts.includeRequester && requesterId
+      ? ` • ${thele.player.requestedBy} <@${requesterId}>`
       : ''
   const lengthMs = track.info?.length ?? 0
 
@@ -293,13 +296,43 @@ function createQueueContainer(
 
 async function handleQueueNavigation(
   interaction: InteractionLike,
-  player: PlayerLike,
+  ctx: CommandContext,
   action: string,
   thele: QueueTextLike
 ): Promise<void> {
   try {
     await interaction.deferUpdate?.()
     const normalizedAction = action.replace(/^ignore_/, '')
+    const guildId = interaction.guildId ?? ctx.guildId
+    const player = guildId ? ctx.client.aqua.players.get(guildId) : undefined
+    const mutating = new Set([
+      'queue_playpause',
+      'queue_loop',
+      'queue_clear'
+    ]).has(normalizedAction)
+    if (mutating) {
+      const memberVoice = await getMemberVoiceState(interaction)
+      const authorization = authorizeVoiceControl({
+        guildId,
+        memberChannelId: memberVoice?.channelId ?? null,
+        playerChannelId: player?.voiceChannel ?? null,
+        hasPlayer: Boolean(player),
+        requirePlayer: true,
+        playerDestroyed: player?.destroyed === true
+      })
+      if (!authorization.ok) {
+        const followup = interaction.followup as
+          | ((payload: { content: string; flags: number }) => Promise<unknown>)
+          | undefined
+        await followup?.({
+          content:
+            'You must be in the same voice channel as the active player.',
+          flags: 64
+        })
+        return
+      }
+    }
+    if (!player || player.destroyed) return
     const messageId = interaction?.message?.id
     const state = messageId ? queueViewState.get(messageId) : undefined
     if (!state) return
@@ -422,7 +455,7 @@ async function handleShowQueue(
       'ignore_queue_clear'
     ]) {
       collector.run(id, (i: InteractionLike) =>
-        handleQueueNavigation(i, player, id, thele)
+        handleQueueNavigation(i, ctx, id, thele)
       )
     }
   } else {
@@ -431,11 +464,7 @@ async function handleShowQueue(
   }
 }
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 60000,
-  uses: { default: 2 }
-})
+@Cooldown.user(60000, { uses: 2 })
 @Declare({
   name: 'queue',
   description: 'Show the music queue with controls'

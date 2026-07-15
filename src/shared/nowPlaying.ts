@@ -1,11 +1,12 @@
 import { Container } from 'seyfert'
-import { MUSIC_PLATFORMS, PLAYBACK_E } from './emojis'
+import { MUSIC_PLATFORMS, PLAYBACK_E } from './emojis.ts'
 import type {
   AvatarClientLike,
+  EditableMessageLike,
   PlayerLike,
   QueueLike,
   TrackLike
-} from './helperTypes'
+} from './helperTypes.ts'
 
 const MAX_TITLE_LENGTH = 60
 const FLAGS_UPDATE = 36864
@@ -89,7 +90,7 @@ export const createNowPlayingEmbed = (
           },
           {
             type: 10,
-            content: `${volumeIcon} \`${volume}%\` ${loopIcon} Requester: \`${requester?.username || 'Unknown'}\``
+            content: `${volumeIcon} \`${volume}%\` ${loopIcon} Requester: \`${(requester as { username?: string } | undefined)?.username || 'Unknown'}\``
           }
         ],
         accessory: {
@@ -139,7 +140,10 @@ export const updateNowPlayingEmbed = async (
   player: PlayerLike,
   client: AvatarClientLike
 ) => {
-  const msg = player?.nowPlayingMessage
+  const msg = player?.nowPlayingMessage as
+    | EditableMessageLike
+    | null
+    | undefined
   if (!msg?.edit || !player?.current) {
     if (player) player.nowPlayingMessage = null
     return

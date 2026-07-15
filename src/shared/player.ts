@@ -1,4 +1,4 @@
-import type { AquaClientLike, PlayerLike } from './helperTypes'
+import type { AquaClientLike, PlayerLike } from './helperTypes.ts'
 
 const DEFAULT_PLAYER_CONNECTION_OPTIONS = Object.freeze({
   deaf: true,

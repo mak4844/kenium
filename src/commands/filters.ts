@@ -7,11 +7,10 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { EMBED_COLOR } from '../shared/constants'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+import { EMBED_COLOR } from '../shared/constants.ts'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const options = {
   filters: createStringOption({
@@ -37,7 +36,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 
 @Declare({
   name: 'filters',

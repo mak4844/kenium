@@ -8,9 +8,8 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { getContextLanguage } from '../utils/i18n'
-import { getErrorCode } from '../utils/interactions'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { getErrorCode } from '../utils/interactions.ts'
 
 const options = {
   loop: createStringOption({
@@ -24,7 +23,7 @@ const options = {
   })
 }
 
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Middlewares(['checkVoice', 'checkPlayer'])
 @Declare({
   name: 'loop',

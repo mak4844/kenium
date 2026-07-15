@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   AttachmentBuilder,
   Command,
@@ -7,10 +7,10 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import type { QueueLike, TrackLike } from '../shared/helperTypes'
-import { playlistTracksToKeniumText } from '../shared/playlist_format'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import type { QueueLike, TrackLike } from '../shared/helperTypes.ts'
+import { playlistTracksToKeniumText } from '../shared/playlist_format.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 const getQueueTracks = (
   queue: QueueLike<TrackLike> | undefined
@@ -26,13 +26,7 @@ const getQueueTracks = (
   return Array.from(queue).filter(Boolean)
 }
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 1000 * 60,
-  uses: {
-    default: 2
-  }
-})
+@Cooldown.user(1000 * 60, { uses: 2 })
 @Declare({
   name: 'export',
   description: 'Export the queue'

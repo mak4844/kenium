@@ -1,4 +1,4 @@
-import type English from './en'
+import type English from './en.ts'
 
 export default {
   hello: 'नमस्ते',

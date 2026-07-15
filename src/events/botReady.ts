@@ -1,13 +1,14 @@
 import { createEvent } from 'seyfert'
-import { updatePresence } from '../../index'
-import { createPlayerConnection } from '../shared/player'
-import { getSettingsCollection } from '../utils/db'
+import { updatePresence } from '../../index.ts'
+import { createPlayerConnection } from '../shared/player.ts'
+import { isSupportedVoiceChannelType } from '../shared/voiceLifecycle.ts'
+import { getSettingsCollection } from '../utils/db.ts'
 import {
   disable247Sync,
   purgeInvalidSettings,
   updateGuildSettingsSync
-} from '../utils/db_helper'
-import { registerVoiceManager } from './voiceStateUpdate'
+} from '../utils/db_helper.ts'
+import { refresh247Cache, registerVoiceManager } from './voiceStateUpdate.ts'
 
 const NICKNAME_SUFFIX = ' [24/7]'
 const BATCH_SIZE = 5
@@ -209,7 +210,7 @@ const processGuild = async (client: BotReadyClient, settings: SettingsLike) => {
       : null
   ])
 
-  if (!voiceChannel || (voiceChannel.type !== 2 && voiceChannel.type !== 13)) {
+  if (!voiceChannel || !isSupportedVoiceChannelType(voiceChannel.type)) {
     client.logger.warn(
       `[24/7] ${guildLike.name} (${guildId}): Voice channel ${voiceChannelId} is invalid or missing.`
     )
@@ -348,6 +349,9 @@ export default createEvent({
 
     try {
       registerVoiceManager(readyClient as any)
+    } catch {}
+    try {
+      refresh247Cache()
     } catch {}
 
     await tryInitAqua(readyClient)

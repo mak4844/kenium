@@ -1,8 +1,8 @@
 import { Command, type CommandContext, Container, Declare } from 'seyfert'
 import { lru } from 'tiny-lru'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const SOURCE_CACHE = lru<{
   fingerprint: string

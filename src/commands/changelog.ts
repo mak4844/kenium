@@ -1,5 +1,6 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
+  ButtonStyle,
   Command,
   type CommandContext,
   Container,
@@ -7,11 +8,10 @@ import {
   Embed,
   Middlewares
 } from 'seyfert'
-import { ButtonStyle } from 'seyfert/lib/types'
-import type { InteractionLike } from '../shared/helperTypes'
-import { getContextLanguage } from '../utils/i18n'
-import { safeDefer } from '../utils/interactions'
-import { APP_VERSION } from '../shared/constants'
+import { APP_VERSION } from '../shared/constants.ts'
+import type { InteractionLike } from '../shared/helperTypes.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
 const CONFIG = {
   GITHUB: {
@@ -408,13 +408,7 @@ function createNavigationButtons(
   name: 'changelog',
   description: 'stuff that my owner coded on me.'
 })
-@Cooldown({
-  type: CooldownType.User,
-  interval: 60000, // 1 minute
-  uses: {
-    default: 2
-  }
-})
+@Cooldown.user(60000, { uses: 2 })
 @Middlewares(['cooldown'])
 export default class Changelog extends Command {
   private activeCollectors = new WeakSet<object>()

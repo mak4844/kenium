@@ -1,14 +1,10 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import { Command, type CommandContext, Declare, Middlewares } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { createNowPlayingContainer } from '../shared/nowPlaying'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { createNowPlayingContainer } from '../shared/nowPlaying.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 1000 * 60,
-  uses: { default: 2 }
-})
+@Cooldown.user(1000 * 60, { uses: 2 })
 @Declare({
   name: 'nowplaying',
   description: 'Displays the currently playing song.'
@@ -50,7 +46,9 @@ export default class nowplayngcmds extends Command {
         title: track.title,
         uri: track.uri,
         length: track.length,
-        requesterName: track.requester?.username || 'Unknown',
+        requesterName:
+          (track.requester as { username?: string } | undefined)?.username ||
+          'Unknown',
         artworkUrl
       })
       await ctx.editOrReply({ components: [embed], flags: 64 | 32768 })

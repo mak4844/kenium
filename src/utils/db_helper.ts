@@ -1,5 +1,11 @@
 import { lru } from 'tiny-lru'
-import { getSettingsCollection as getSettingsDbCollection } from './collections'
+import { getSettingsCollection as getSettingsDbCollection } from './collections.ts'
+import {
+  cloneSettings,
+  isCurrentVersion,
+  mergeQueuedUpdate,
+  type VersionedUpdate
+} from './settingsQueue.ts'
 
 type SettingsCollection = ReturnType<typeof getSettingsDbCollection>
 
@@ -102,13 +108,14 @@ class DatabaseManager {
 
   cache = lru<GuildSettings>(CACHE_MAX, CACHE_TTL_MS, true)
 
-  updateQueue = new Map<string, Partial<GuildSettings>>()
+  updateQueue = new Map<string, VersionedUpdate<GuildSettings>>()
+  updateVersions = new Map<string, number>()
   updateTimer: NodeJS.Timeout | null = null
 
   private processingMutex: Promise<void> = Promise.resolve()
 
   consecutiveFailures = 0
-  maxFailuresBeforeDrop = 5
+  failureWarningThreshold = 5
 
   static getInstance(): DatabaseManager {
     if (!DatabaseManager.instance) {
@@ -141,7 +148,7 @@ class DatabaseManager {
 
     // Atomically swap the queue before async processing
     const batch = this.updateQueue
-    this.updateQueue = new Map<string, Partial<GuildSettings>>()
+    this.updateQueue = new Map<string, VersionedUpdate<GuildSettings>>()
 
     // Use mutex to ensure only one batch processes at a time.
     // Wrap _executeBatchUpdates in Promise.resolve to catch sync throws
@@ -153,21 +160,33 @@ class DatabaseManager {
       .catch((err) => {
         console.error('Batch mutex error:', err)
         // Re-queue failed items
-        for (const [k, v] of batch.entries()) {
-          const existing = this.updateQueue.get(k)
-          this.updateQueue.set(k, existing ? { ...existing, ...v } : v)
-        }
+        this.requeueBatch(batch)
         this.scheduleBatch()
       })
   }
 
-  private _executeBatchUpdates(batch: Map<string, Partial<GuildSettings>>) {
+  private requeueBatch(batch: Map<string, VersionedUpdate<GuildSettings>>) {
+    for (const [guildId, failed] of batch) {
+      const newer = this.updateQueue.get(guildId)
+      if (
+        !newer &&
+        !isCurrentVersion(failed.version, this.updateVersions.get(guildId))
+      ) {
+        continue
+      }
+      this.updateQueue.set(guildId, mergeQueuedUpdate(failed, newer))
+    }
+  }
+
+  private _executeBatchUpdates(
+    batch: Map<string, VersionedUpdate<GuildSettings>>
+  ) {
     if (batch.size === 0) return
     const collection = this.getSettingsCollection()
 
     const updates = Array.from(batch.entries())
 
-    const chunks: Array<Array<[string, Partial<GuildSettings>]>> = []
+    const chunks: Array<Array<[string, VersionedUpdate<GuildSettings>]>> = []
     for (let i = 0; i < updates.length; i += MAX_BATCH_SIZE) {
       chunks.push(updates.slice(i, i + MAX_BATCH_SIZE))
     }
@@ -196,7 +215,16 @@ class DatabaseManager {
         const nowIso = new Date().toISOString()
         const docsToUpsert: GuildSettings[] = []
 
-        for (const [guildId, updateData] of chunk) {
+        for (const [guildId, queuedUpdate] of chunk) {
+          if (
+            !isCurrentVersion(
+              queuedUpdate.version,
+              this.updateVersions.get(guildId)
+            )
+          ) {
+            continue
+          }
+
           const base =
             this.cache.get(guildId) ??
             existingMap.get(guildId) ??
@@ -206,7 +234,7 @@ class DatabaseManager {
 
           const next = {
             ...base,
-            ...updateData,
+            ...queuedUpdate.updates,
             _id: guildId,
             guildId,
             createdAt,
@@ -217,11 +245,13 @@ class DatabaseManager {
           docsToUpsert.push(next)
         }
 
+        if (docsToUpsert.length === 0) continue
+
         const saved = asGuildSettingsArray(collection.insert(docsToUpsert))
 
         for (const doc of saved) {
           const key = String(doc._id ?? doc.guildId)
-          if (key) this.cache.set(key, doc)
+          if (key) this.cache.set(key, cloneSettings(doc))
         }
       }
 
@@ -230,34 +260,40 @@ class DatabaseManager {
       console.error('Batch update failed:', error)
       this.consecutiveFailures++
 
-      for (const [k, v] of batch.entries()) {
-        const existing = this.updateQueue.get(k)
-        this.updateQueue.set(k, existing ? { ...existing, ...v } : v)
-      }
+      this.requeueBatch(batch)
 
       if (this.updateTimer) {
         clearTimeout(this.updateTimer)
         this.updateTimer = null
       }
 
-      if (this.consecutiveFailures >= this.maxFailuresBeforeDrop) {
+      if (this.consecutiveFailures >= this.failureWarningThreshold) {
         console.error(
-          `Persistent batch update failure (${this.consecutiveFailures} attempts). Dropping ${this.updateQueue.size} pending updates to prevent memory leak.`
+          `Persistent batch update failure (${this.consecutiveFailures} attempts). Retaining ${this.updateQueue.size} pending updates for retry.`
         )
-        this.updateQueue.clear()
-      } else {
-        setTimeout(() => this.scheduleBatch(), BATCH_INTERVAL_MS * 2)
       }
+      setTimeout(() => this.scheduleBatch(), BATCH_INTERVAL_MS * 2)
     }
   }
 
   queueUpdate(guildId: string, updates: Partial<GuildSettings>) {
+    const version = (this.updateVersions.get(guildId) ?? 0) + 1
+    this.updateVersions.set(guildId, version)
     const existing = this.updateQueue.get(guildId)
     this.updateQueue.set(
       guildId,
-      existing ? { ...existing, ...updates } : updates
+      mergeQueuedUpdate(existing ?? { updates: {}, version }, {
+        updates,
+        version
+      })
     )
     this.scheduleBatch()
+  }
+
+  supersedeQueuedUpdate(guildId: string) {
+    const version = (this.updateVersions.get(guildId) ?? 0) + 1
+    this.updateVersions.set(guildId, version)
+    this.updateQueue.delete(guildId)
   }
 
   flushUpdates() {
@@ -289,6 +325,7 @@ class DatabaseManager {
     this.flushUpdates()
     this.cache.clear()
     this.settingsCollection = null
+    this.updateVersions.clear()
   }
 }
 
@@ -300,7 +337,7 @@ export const getGuildSettings = (guildId: string) => {
   }
 
   const cached = dbManager.cache.get(guildId)
-  if (cached) return cached
+  if (cached) return cloneSettings(cached)
 
   try {
     const collection = dbManager.getSettingsCollection()
@@ -312,8 +349,8 @@ export const getGuildSettings = (guildId: string) => {
     settings.guildId = settings.guildId || guildId
     settings.twentyFourSevenEnabled = toBool(settings.twentyFourSevenEnabled)
 
-    dbManager.cache.set(guildId, settings)
-    return settings
+    dbManager.cache.set(guildId, cloneSettings(settings))
+    return cloneSettings(settings)
   } catch (error) {
     throw new DatabaseError('Failed to retrieve guild settings', error)
   }
@@ -331,12 +368,10 @@ export const updateGuildSettings = (
     updates.twentyFourSevenEnabled = toBool(updates.twentyFourSevenEnabled)
   }
 
-  const cached = dbManager.cache.get(guildId)
-  if (cached) {
-    const updated = { ...cached, ...updates, _id: guildId, guildId }
-    updated.twentyFourSevenEnabled = toBool(updated.twentyFourSevenEnabled)
-    dbManager.cache.set(guildId, updated)
-  }
+  const base = getGuildSettings(guildId)
+  const updated = { ...base, ...updates, _id: guildId, guildId }
+  updated.twentyFourSevenEnabled = toBool(updated.twentyFourSevenEnabled)
+  dbManager.cache.set(guildId, cloneSettings(updated))
 
   dbManager.queueUpdate(guildId, updates)
 }
@@ -371,8 +406,9 @@ export const updateGuildSettingsSync = (
     next.twentyFourSevenEnabled = toBool(next.twentyFourSevenEnabled)
 
     const saved = asGuildSettings(collection.insert(next))
-    dbManager.cache.set(guildId, saved)
-    return saved
+    dbManager.supersedeQueuedUpdate(guildId)
+    dbManager.cache.set(guildId, cloneSettings(saved))
+    return cloneSettings(saved)
   } catch (error) {
     throw new DatabaseError('Failed to update guild settings', error)
   }
@@ -499,13 +535,14 @@ export const getAll247Settings = () => {
     const docs = collection.find({
       twentyFourSevenEnabled: 1
     }) as unknown as GuildSettings[]
-    return docs
-      .filter((doc) => doc.voiceChannelId)
-      .map((doc) => ({
+    return docs.flatMap((doc) => {
+      if (!doc.voiceChannelId) return []
+      return {
         guildId: doc.guildId || String(doc._id),
-        voiceChannelId: doc.voiceChannelId!,
+        voiceChannelId: doc.voiceChannelId,
         textChannelId: doc.textChannelId || null
-      }))
+      }
+    })
   } catch (error) {
     console.error('[db_helper] Failed to get all 24/7 settings:', error)
     return []

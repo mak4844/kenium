@@ -1,5 +1,5 @@
-import type { Playlist, Track } from '../shared/types'
-import { SimpleDB } from './simpleDB'
+import type { Playlist, Track } from '../shared/types.ts'
+import { SimpleDB } from './simpleDB.ts'
 
 const PLAYLIST_COLUMNS = {
   userId: 'TEXT',

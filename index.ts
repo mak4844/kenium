@@ -1,15 +1,14 @@
 import process from 'node:process'
 import 'dotenv/config'
-import { CooldownManager } from '@slipher/cooldown'
+import { cooldown } from '@slipher/cooldown'
 import { Aqua, type Player, type Track } from 'aqualink'
 import {
   Client,
   type Container,
-  type HttpClient,
+  definePlugins,
   LimitedMemoryAdapter,
   type ParseClient,
-  type ParseLocales,
-  type ParseMiddlewares
+  type ParseLocales
 } from 'seyfert'
 import { lru } from 'tiny-lru'
 import {
@@ -17,20 +16,23 @@ import {
   cleanupKaraokeSession,
   hasKaraokeSession,
   syncKaraokeSessionTrack
-} from './src/commands/karaoke'
+} from './src/commands/karaoke.ts'
 import {
   reconnectAllTwentyFourSevenPlayers,
   registerVoiceManager
-} from './src/events/voiceStateUpdate'
-import type English from './src/languages/en'
-import { middlewares } from './src/middlewares/middlewares'
-import { APP_VERSION } from './src/shared/constants'
-import { createNowPlayingEmbed, truncateText } from './src/shared/nowPlaying'
-import { closeDatabase, initDatabase } from './src/utils/db'
+} from './src/events/voiceStateUpdate.ts'
+import type English from './src/languages/en.ts'
+import { middlewares } from './src/middlewares/middlewares.ts'
+import { APP_VERSION } from './src/shared/constants.ts'
+import type { EditableMessageLike } from './src/shared/helperTypes.ts'
+import { createNowPlayingEmbed, truncateText } from './src/shared/nowPlaying.ts'
+import { closeDatabase, initDatabase } from './src/utils/db.ts'
 import {
   flushDatabaseUpdates,
   isTwentyFourSevenEnabled
-} from './src/utils/db_helper'
+} from './src/utils/db_helper.ts'
+
+const plugins = definePlugins(cooldown())
 
 // Constants
 const PRESENCE_UPDATE_INTERVAL = 60000
@@ -57,6 +59,7 @@ if (!id) {
 }
 
 const client = new Client({
+  plugins,
   onShardDisconnect({ shardId, code, reason }) {
     client.logger.warn(`Shard ${shardId} disconnected: ${code} — ${reason}`)
   },
@@ -127,7 +130,7 @@ const getTrackKey = (track: Track | null | undefined) => {
 const getPlayerTextChannelId = (player: Player) =>
   player.textChannel ||
   player._lastTextChannel ||
-  player.nowPlayingMessage?.channelId ||
+  (player.nowPlayingMessage as EditableMessageLike | null)?.channelId ||
   null
 
 const shouldLogSocketClose = (guildId: string, code: unknown) => {
@@ -265,8 +268,9 @@ client.setServices({
 })
 
 aqua.on('lyricsFound', (_player, track, payload) => {
+  const lyrics = (payload as { lyrics?: unknown[] }).lyrics
   console.log(
-    `Lyrics found for ${track.info?.title || track.title}: ${payload.lyrics?.length} lines`
+    `Lyrics found for ${track.info?.title || track.title}: ${lyrics?.length} lines`
   )
 })
 
@@ -324,7 +328,7 @@ aqua.on(
         )
       }
 
-      const msg = player.nowPlayingMessage
+      const msg = player.nowPlayingMessage as EditableMessageLike | null
       const textChannelId = player.textChannel || msg?.channelId
 
       if (!textChannelId) return
@@ -392,29 +396,25 @@ aqua.on(
   }
 )
 
-aqua.on(
-  'trackError',
-  async (
-    player: Player,
-    track: Track | null | undefined,
-    payload: { exception?: { message?: string } }
-  ) => {
-    const textChannelId = getPlayerTextChannelId(player)
-    if (!textChannelId) return
+aqua.on('trackError', async (...args: unknown[]) => {
+  const player = args[0] as Player
+  const track = args[1] as Track | null | undefined
+  const payload = args[2] as { exception?: { message?: string } }
+  const textChannelId = getPlayerTextChannelId(player)
+  if (!textChannelId) return
 
-    const errorMsg = payload.exception?.message || 'Playback failed'
-    const fallbackTrack = (player.current as Track | null | undefined) || track
-    const rawTitle =
-      fallbackTrack?.info?.title || fallbackTrack?.title || 'Unknown track'
-    const title = truncateText(rawTitle, 25)
+  const errorMsg = payload.exception?.message || 'Playback failed'
+  const fallbackTrack = (player.current as Track | null | undefined) || track
+  const rawTitle =
+    fallbackTrack?.info?.title || fallbackTrack?.title || 'Unknown track'
+  const title = truncateText(rawTitle, 25)
 
-    await client.messages
-      .write(textChannelId, {
-        content: `❌ **${title}**: ${truncateText(errorMsg, 50)}`
-      })
-      .catch(() => {})
-  }
-)
+  await client.messages
+    .write(textChannelId, {
+      content: `❌ **${title}**: ${truncateText(errorMsg, 50)}`
+    })
+    .catch(() => {})
+})
 
 aqua.on('debug', (source: unknown, message?: unknown) => {
   const detail =
@@ -502,7 +502,6 @@ initDatabase()
     await client
       .uploadCommands({ cachePath: './commands.json' })
       .catch(() => {})
-    client.cooldown = new CooldownManager(client as never)
     try {
       registerVoiceManager(client as any)
     } catch (err) {
@@ -515,15 +514,10 @@ initDatabase()
   })
 
 declare module 'seyfert' {
-  interface UsingClient
-    extends ParseClient<Client<true>>,
-      ParseClient<HttpClient> {
-    aqua: InstanceType<typeof Aqua>
+  interface SeyfertRegistry {
+    client: ParseClient<typeof client> & { aqua: InstanceType<typeof Aqua> }
+    langs: ParseLocales<typeof English>
+    middlewares: typeof middlewares
+    plugins: typeof plugins
   }
-  interface Client<Ready extends boolean> {
-    cooldown: CooldownManager
-  }
-  interface RegisteredMiddlewares
-    extends ParseMiddlewares<typeof middlewares> {}
-  interface DefaultLocale extends ParseLocales<typeof English> {}
 }

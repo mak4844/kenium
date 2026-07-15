@@ -8,9 +8,8 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { isExpiredInteraction } from '../shared/errorGuard'
-import { getContextLanguage } from '../utils/i18n'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
 
 type QueueItemLike = {
   info?: {
@@ -35,15 +34,6 @@ type JumpTextLike = {
   }
 }
 
-type AutocompleteInteractionLike = {
-  guildId?: string | null
-  client: CommandContext['client']
-  getInput?: () => string | undefined
-  respond: (
-    options: { name: string; value: number | string }[]
-  ) => Promise<unknown> | unknown
-}
-
 type JumpPlayerLike = Player & {
   queue: QueueItemLike[] & {
     findIndex: (predicate: (song: QueueItemLike) => boolean) => number
@@ -51,11 +41,21 @@ type JumpPlayerLike = Player & {
   }
 }
 
-const createAutocompleteResults = (
+function createAutocompleteResults(
+  queue: QueueItemLike[],
+  focused: string,
+  includePosition: true
+): { name: string; value: number }[]
+function createAutocompleteResults(
+  queue: QueueItemLike[],
+  focused: string,
+  includePosition?: false
+): { name: string; value: string }[]
+function createAutocompleteResults(
   queue: QueueItemLike[],
   focused: string,
   includePosition = false
-): { name: string; value: number | string }[] => {
+): { name: string; value: number | string }[] {
   if (!queue?.length) return []
 
   const results: { name: string; value: number | string }[] = []
@@ -99,7 +99,7 @@ const options = {
   name: createStringOption({
     description: 'The song to jump to',
     required: false,
-    autocomplete: async (interaction: AutocompleteInteractionLike) => {
+    autocomplete: async (interaction) => {
       try {
         const player = interaction.client.aqua.players.get(
           interaction.guildId || ''
@@ -119,7 +119,7 @@ const options = {
   position: createIntegerOption({
     description: 'The song number to jump to',
     required: false,
-    autocomplete: async (interaction: AutocompleteInteractionLike) => {
+    autocomplete: async (interaction) => {
       try {
         const player = interaction.client.aqua.players.get(
           interaction.guildId || ''
@@ -139,7 +139,7 @@ const options = {
 }
 
 @Middlewares(['checkPlayer', 'checkVoice'])
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 @Declare({
   name: 'jump',
   description: 'Jump to a specific position or song in the queue'

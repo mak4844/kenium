@@ -1,4 +1,4 @@
-import { Cooldown, CooldownType } from '@slipher/cooldown'
+import { Cooldown } from '@slipher/cooldown'
 import {
   Command,
   type CommandContext,
@@ -8,21 +8,17 @@ import {
   Middlewares,
   Options
 } from 'seyfert'
-import { isExpiredInteraction } from '../shared/errorGuard'
+import { isExpiredInteraction } from '../shared/errorGuard.ts'
+import { fetchImportFile, ImportFileError } from '../shared/importFile.ts'
 import {
   buildTrackResolveQueries,
   type PlaylistFileTrack,
   parsePlaylistFile
-} from '../shared/playlist_format'
-import { getContextLanguage } from '../utils/i18n'
+} from '../shared/playlist_format.ts'
+import { getContextLanguage } from '../utils/i18n.ts'
+import { safeDefer } from '../utils/interactions.ts'
 
-@Cooldown({
-  type: CooldownType.User,
-  interval: 1000 * 60,
-  uses: {
-    default: 2
-  }
-})
+@Cooldown.user(1000 * 60, { uses: 2 })
 
 @Declare({
   name: 'import',
@@ -38,13 +34,15 @@ import { getContextLanguage } from '../utils/i18n'
 export default class importcmds extends Command {
   public override async run(ctx: CommandContext): Promise<void> {
     try {
+      if (!(await safeDefer(ctx, true))) return
+
       const { client } = ctx
       const lang = getContextLanguage(ctx)
       const t = ctx.t.get(lang)
-      const { file } = ctx.options as { file: { url: string } }
-
-      const response = await fetch(file.url)
-      const fileContent = await response.text()
+      const { file } = ctx.options as {
+        file: { url: string; size?: number }
+      }
+      const fileContent = await fetchImportFile(file)
 
       if (!fileContent.trim()) {
         await ctx.editOrReply({
@@ -169,6 +167,21 @@ export default class importcmds extends Command {
       await ctx.editOrReply({ embeds: [resultEmbed], flags: 64 })
     } catch (error: unknown) {
       if (isExpiredInteraction(error)) return
+      const message =
+        error instanceof ImportFileError
+          ? error.message
+          : 'The file could not be imported. Please try again.'
+      try {
+        await ctx.editOrReply({
+          embeds: [
+            new Embed().setDescription(`❌ ${message}`).setColor(0xff0000)
+          ],
+          flags: 64
+        })
+      } catch (responseError) {
+        if (isExpiredInteraction(responseError)) return
+        throw responseError
+      }
     }
   }
 }

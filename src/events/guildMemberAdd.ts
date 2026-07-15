@@ -1,5 +1,5 @@
 import { createEvent } from 'seyfert'
-import { state } from '../../index'
+import { state } from '../../index.ts'
 
 export default createEvent({
   data: { name: 'guildMemberAdd' },

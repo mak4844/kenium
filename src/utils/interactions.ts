@@ -2,7 +2,7 @@ import type {
   DeferReplyOptionsLike,
   MemberLike,
   VoiceStateLike
-} from '../shared/helperTypes'
+} from '../shared/helperTypes.ts'
 
 type DeferableContext = {
   deferReply: unknown
@@ -132,18 +132,21 @@ export const getMemberVoiceState = async (
 ): Promise<VoiceStateLike | null> => {
   if (MEMBER_VOICE_STATE in ctx) return ctx[MEMBER_VOICE_STATE] ?? null
 
-  let voiceState: VoiceStateLike | null | undefined
+  let voiceState: VoiceStateLike | null = null
   try {
     if (typeof ctx.member?.voice === 'function') {
-      voiceState =
-        (await ctx.member.voice('cache')) ??
-        (await ctx.member.voice('flow')) ??
-        null
-    } else {
-      voiceState = null
+      voiceState = (await ctx.member.voice('flow')) ?? null
     }
   } catch {
     voiceState = null
+  }
+
+  if (!voiceState?.channelId && typeof ctx.member?.voice === 'function') {
+    try {
+      voiceState = (await ctx.member.voice('cache')) ?? null
+    } catch {
+      voiceState = null
+    }
   }
 
   if (!voiceState?.channelId) {

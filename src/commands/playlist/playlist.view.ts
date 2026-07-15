@@ -1,5 +1,6 @@
 import {
   ActionRow,
+  ButtonStyle,
   type CommandContext,
   createStringOption,
   Declare,
@@ -8,21 +9,19 @@ import {
   StringSelectOption,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ButtonStyle } from 'seyfert/lib/types'
-import { ICONS, LIMITS } from '../../shared/constants'
+import { ICONS, LIMITS } from '../../shared/constants.ts'
 import {
   createButtons,
   createEmbed,
   extractYouTubeId,
   formatDuration,
   handlePlaylistAutocomplete
-} from '../../shared/utils'
+} from '../../shared/utils.ts'
 import {
   getPlaylistsCollection,
   getPlaylistTracks,
   getTracksCollection
-} from '../../utils/db'
+} from '../../utils/db.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 const tracksCol = () => getTracksCollection()
@@ -75,7 +74,7 @@ function getSourceIcon(uri: string): string {
   name: 'view',
   description: 'View your playlists or a specific playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class ViewCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { playlist: playlistName } = ctx.options as { playlist?: string }
@@ -91,6 +90,7 @@ export class ViewCommand extends SubCommand {
           limit: pageSize,
           skip: (page - 1) * pageSize,
           fields: [
+            '_id',
             'name',
             'totalDuration',
             'lastModified',
@@ -112,15 +112,11 @@ export class ViewCommand extends SubCommand {
             }
           ]
         )
-        const button = createButtons([
-          {
-            id: `create_playlist_${userId}`,
-            label: 'Create Playlist',
-            emoji: ICONS.add,
-            style: ButtonStyle.Success
-          }
-        ])
-        return ctx.write({ embeds: [embed], components: [button], flags: 64 })
+        embed.addFields({
+          name: `${ICONS.add} Create One`,
+          value: 'Use `/playlists create` to create your first playlist.'
+        })
+        return ctx.write({ embeds: [embed], flags: 64 })
       }
 
       const embed = createEmbed(
@@ -143,7 +139,7 @@ export class ViewCommand extends SubCommand {
 
       const selectOptions = playlists.slice(0, 25).map((playlist) => ({
         label: playlist.name,
-        value: playlist.name,
+        value: playlist._id,
         description: `${playlist.trackCount || 0} tracks - ${formatDuration(playlist.totalDuration || 0)}`,
         emoji: ICONS.playlist
       }))
@@ -151,7 +147,7 @@ export class ViewCommand extends SubCommand {
         selectOptions.length > 0
           ? [
               createSelectMenu(
-                `select_playlist_${userId}`,
+                `playlist:select:${userId}`,
                 'Choose a playlist to view...',
                 selectOptions
               )

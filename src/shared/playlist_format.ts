@@ -1,4 +1,4 @@
-import { APP_VERSION } from '../shared/constants'
+import { APP_VERSION } from '../shared/constants.ts'
 
 export type PlaylistFileTrack = {
   title: string

@@ -1,14 +1,13 @@
 import {
+  ButtonStyle,
   type CommandContext,
   createStringOption,
   Declare,
   Options,
   SubCommand
 } from 'seyfert'
-import type { OptionsRecord } from 'seyfert/lib/commands/applications/chat'
-import { ButtonStyle } from 'seyfert/lib/types'
-import { ICONS, LIMITS } from '../../shared/constants'
-import type { Track } from '../../shared/types'
+import { ICONS, LIMITS } from '../../shared/constants.ts'
+import type { Track } from '../../shared/types.ts'
 import {
   createButtons,
   createEmbed,
@@ -18,15 +17,20 @@ import {
   handlePlaylistAutocomplete,
   handleTrackAutocomplete,
   mapPool
-} from '../../shared/utils'
+} from '../../shared/utils.ts'
 import {
   getDatabase,
   getPlaylistsCollection,
   getTracksCollection
-} from '../../utils/db'
-import { getContextTranslations } from '../../utils/i18n'
-import { safeDefer } from '../../utils/interactions'
-import { generateSortableId } from '../../utils/simpleDB'
+} from '../../utils/db.ts'
+import { getContextTranslations } from '../../utils/i18n.ts'
+import { safeDefer } from '../../utils/interactions.ts'
+import {
+  calculatePlaylistAggregate,
+  playlistLockKey,
+  withPlaylistMutationLock
+} from '../../utils/playlistMutations.ts'
+import { generateSortableId } from '../../utils/simpleDB.ts'
 
 const playlistsCol = () => getPlaylistsCollection()
 const tracksCol = () => getTracksCollection()
@@ -113,7 +117,7 @@ export const _functions = {
   name: 'add',
   description: 'Add tracks to playlist'
 })
-@Options(options as unknown as OptionsRecord)
+@Options(options)
 export class AddCommand extends SubCommand {
   async run(ctx: CommandContext) {
     const { playlist: playlistName, tracks: rawQuery } = ctx.options as {
@@ -153,39 +157,12 @@ export class AddCommand extends SubCommand {
       })
     }
 
-    const currentTracksCount =
-      typeof playlistDb.trackCount === 'number'
-        ? playlistDb.trackCount
-        : tracksCol().count({ playlistId: playlistDb._id })
-    const availableSlots = Math.max(0, LIMITS.MAX_TRACKS - currentTracksCount)
-
-    if (availableSlots === 0) {
-      return ctx.write({
-        embeds: [
-          createEmbed(
-            'warning',
-            t?.full || 'Playlist Full',
-            (
-              t?.fullDesc || 'This playlist has reached the {max}-track limit!'
-            ).replace('{max}', String(LIMITS.MAX_TRACKS))
-          )
-        ],
-        flags: 64
-      })
-    }
+    const availableSlots = LIMITS.MAX_TRACKS
 
     if (!(await safeDefer(ctx, true))) return
 
     const timestamp = new Date().toISOString()
     const existingCanonical = new Set<string>()
-    const existingUris = tracksCol().find(
-      { playlistId: playlistDb._id },
-      { fields: ['uri'] }
-    ) as Array<{ uri: string }>
-    for (const tr of existingUris) {
-      existingCanonical.add(_functions.canonicalizeUri(tr.uri))
-    }
-
     const tokens = _functions.splitInput(rawQuery)
     const isSingleYouTubePlaylist =
       tokens.length === 1 && YOUTUBE_PLAYLIST_RE.test(tokens[0] as string)
@@ -271,27 +248,75 @@ export class AddCommand extends SubCommand {
         })
       }
 
-      if (toAdd.length > availableSlots) toAdd.length = availableSlots
-
-      const addedDuration = toAdd.reduce(
-        (sum, track) => sum + (track.duration || 0),
-        0
-      )
-      const newTotalDuration = (playlistDb.totalDuration || 0) + addedDuration
-      const newTotalTracks = currentTracksCount + toAdd.length
+      let committedTracks: Track[] = []
+      let aggregate = { trackCount: 0, totalDuration: 0 }
 
       try {
-        getDatabase().transaction(() => {
-          tracksCol().insert(toAdd)
-          playlistsCol().update(
-            { _id: playlistDb._id },
-            {
-              lastModified: timestamp,
-              totalDuration: newTotalDuration,
-              trackCount: newTotalTracks
-            }
-          )
-        })
+        const mutationResult = await withPlaylistMutationLock(
+          playlistLockKey(userId, playlistName),
+          () => {
+            const currentPlaylist = playlistsCol().findOne(
+              { userId, name: playlistName },
+              { fields: ['_id'] }
+            )
+            if (!currentPlaylist) return 'not-found' as const
+
+            const existingRows = tracksCol().find(
+              { playlistId: currentPlaylist._id },
+              { fields: ['uri'] }
+            )
+            const committedCanonical = new Set(
+              existingRows.map((track) => _functions.canonicalizeUri(track.uri))
+            )
+            const slots = Math.max(0, LIMITS.MAX_TRACKS - existingRows.length)
+            committedTracks = toAdd
+              .filter((track) => {
+                const canonical = _functions.canonicalizeUri(track.uri)
+                if (committedCanonical.has(canonical)) return false
+                committedCanonical.add(canonical)
+                return true
+              })
+              .slice(0, slots)
+              .map((track) => ({
+                ...track,
+                playlistId: currentPlaylist._id
+              }))
+            if (committedTracks.length === 0) return 'nothing-added' as const
+
+            getDatabase().transaction(() => {
+              tracksCol().insert(committedTracks)
+              aggregate = calculatePlaylistAggregate(
+                tracksCol().find(
+                  { playlistId: currentPlaylist._id },
+                  { fields: ['duration'] }
+                )
+              )
+              playlistsCol().update(
+                { _id: currentPlaylist._id },
+                { lastModified: timestamp, ...aggregate }
+              )
+            })
+            return 'added' as const
+          }
+        )
+        if (mutationResult !== 'added') {
+          return ctx.editOrReply({
+            embeds: [
+              createEmbed(
+                'warning',
+                mutationResult === 'not-found'
+                  ? t?.notFound || 'Playlist Not Found'
+                  : t?.nothingAdded || 'Nothing Added',
+                mutationResult === 'not-found'
+                  ? (
+                      t?.notFoundDesc || 'No playlist named "{name}" exists!'
+                    ).replace('{name}', playlistName)
+                  : t?.nothingAddedDesc ||
+                      'No new tracks were added. They may already exist or the playlist may be full.'
+              )
+            ]
+          })
+        }
       } catch (dbError) {
         console.error('Failed to update playlist:', dbError)
         return ctx.editOrReply({
@@ -310,7 +335,7 @@ export class AddCommand extends SubCommand {
         })
       }
 
-      const primary = toAdd[0]
+      const primary = committedTracks[0]
       if (!primary) {
         return ctx.editOrReply({
           embeds: [
@@ -325,16 +350,16 @@ export class AddCommand extends SubCommand {
 
       const embed = createEmbed(
         'success',
-        toAdd.length > 1
+        committedTracks.length > 1
           ? t?.tracksAdded || 'Tracks Added'
           : t?.trackAdded || 'Track Added',
         null,
         [
           {
-            name: `${ICONS.music} ${toAdd.length > 1 ? t?.tracks || 'Tracks' : t?.track || 'Track'}`,
+            name: `${ICONS.music} ${committedTracks.length > 1 ? t?.tracks || 'Tracks' : t?.track || 'Track'}`,
             value:
-              toAdd.length > 1
-                ? `**${primary.title}** (+${toAdd.length - 1} more)`
+              committedTracks.length > 1
+                ? `**${primary.title}** (+${committedTracks.length - 1} more)`
                 : `**${primary.title}**`,
             inline: false
           },
@@ -350,17 +375,17 @@ export class AddCommand extends SubCommand {
           },
           {
             name: `${ICONS.tracks} ${t?.added || 'Added'}`,
-            value: `${toAdd.length} track${toAdd.length !== 1 ? 's' : ''}`,
+            value: `${committedTracks.length} track${committedTracks.length !== 1 ? 's' : ''}`,
             inline: true
           },
           {
             name: `${ICONS.playlist} ${t?.total || 'Total'}`,
-            value: `${newTotalTracks}/${LIMITS.MAX_TRACKS} tracks`,
+            value: `${aggregate.trackCount}/${LIMITS.MAX_TRACKS} tracks`,
             inline: true
           },
           {
             name: `${ICONS.duration} ${t?.duration || 'Duration'}`,
-            value: formatDuration(newTotalDuration),
+            value: formatDuration(aggregate.totalDuration),
             inline: true
           }
         ]
