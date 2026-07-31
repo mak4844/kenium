@@ -73,6 +73,7 @@ export interface ComponentCollectorSourceLike<TInteraction = InteractionLike>
 export interface PlayerLike<TTrack = TrackLike> {
   guildId?: string
   destroyed?: boolean
+  connected?: boolean
   playing?: boolean
   paused?: boolean
   loop?: string | number | null
@@ -92,6 +93,8 @@ export interface PlayerLike<TTrack = TrackLike> {
   destroy?: () => unknown
   deaf?: boolean
   mute?: boolean
+  _reconnecting?: boolean
+  _voiceRecovering?: boolean
   connect?: (options?: ConnectionOptions) => unknown
   setLoop?: unknown
   setVolume?: (value: number) => MaybePromise<unknown>

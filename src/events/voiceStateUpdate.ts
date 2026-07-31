@@ -11,23 +11,35 @@ import type {
   TrackLike
 } from '../shared/helperTypes.ts'
 import { createPlayerConnection } from '../shared/player.ts'
-import { isSupportedVoiceChannelType } from '../shared/voiceLifecycle.ts'
+import {
+  isPlayerConnectedToChannel,
+  isPlayerRecovering,
+  isSupportedVoiceChannelType
+} from '../shared/voiceLifecycle.ts'
 import {
   disable247Sync,
   get247ChannelIds,
   getAll247Settings,
   isTwentyFourSevenEnabled
 } from '../utils/db_helper.ts'
-import { cleanupResumedReconnectTimers } from './resumed.ts'
 
 const NO_SONG_TIMEOUT = 600000
 const REJOIN_DELAY = 5000
+const BULK_REJOIN_STAGGER = 900
+const BULK_REJOIN_DEDUPE_WINDOW = 15000
 const CLEANUP_INTERVAL = 300000
 const CACHE_SIZE = 1000
 const DEBOUNCE_DELAY = 50
 
 type RejoinOutcome = 'connected' | 'retry' | 'noop'
 type TimerLike = ReturnType<typeof setTimeout>
+type RecoverySource =
+  | 'gatewayReconnect'
+  | 'gatewayResumed'
+  | 'playerDestroy'
+  | 'socketClosed'
+  | 'voiceStateUpdate'
+  | 'retry'
 type VoiceStateLike = { channelId?: string | null; userId?: string | null }
 type VoiceStateUpdatePayload = {
   guildId: string
@@ -260,14 +272,6 @@ const _functions = {
       return null
     }
   },
-  getBotVoiceChannelId(guild: GuildLike, botId: string): string | null {
-    return (
-      guild?.members?.me?.voice?.channelId ||
-      guild?.members?.get?.(botId)?.voice?.channelId ||
-      guild?.voiceStates?.get?.(botId)?.channelId ||
-      null
-    )
-  },
   countHumans(channelId: string, members: MembersLike): number {
     const cached = humanCountCache.get(channelId)
     if (cached != null) return cached
@@ -327,8 +331,18 @@ class CircuitBreaker {
   }
 }
 
+type RecoveryJob = {
+  client: VoiceClientLike
+  dueAt: number
+  source: RecoverySource
+  textId?: string
+  timer: TimerLike
+  voiceId?: string
+}
+
 class VoiceManager {
   timeouts = new Map<string, TimerLike>()
+  recoveryJobs = new Map<string, RecoveryJob>()
   states = new Map<string, number>()
   pending = new Map<
     string,
@@ -368,6 +382,7 @@ class VoiceManager {
   guildCache = lru(CACHE_SIZE, 60000) as GuildCacheLike
   registered = new WeakSet<VoiceClientLike>()
   cleanupTimer: TimerLike | null = null
+  lastBulkRecoveryAt = 0
   stopped = false
 
   constructor() {
@@ -421,6 +436,13 @@ class VoiceManager {
     )
   }
 
+  cancelRecovery(guildId: string) {
+    const job = this.recoveryJobs.get(guildId)
+    if (!job) return
+    _functions.clearTimer(job.timer)
+    this.recoveryJobs.delete(guildId)
+  }
+
   register(client: VoiceClientLike) {
     if (this.registered.has(client)) return
 
@@ -448,6 +470,7 @@ class VoiceManager {
         if (!player.guildId) return
         this.setState(player.guildId, STATE_PLAYING)
         this.clearTimeout(player.guildId)
+        this.cancelRecovery(player.guildId)
       },
 
       queueEnd: (player: PlayerLike) => {
@@ -459,6 +482,7 @@ class VoiceManager {
 
       playerDestroy: (player: PlayerLike) => {
         if (!player?.guildId) return
+        if (isPlayerRecovering(player)) return
         this.setState(player.guildId, STATE_DESTROYING)
         this.clearTimeout(player.guildId)
 
@@ -467,7 +491,8 @@ class VoiceManager {
             client,
             player.guildId,
             player.voiceChannel ?? undefined,
-            player.textChannel ?? undefined
+            player.textChannel ?? undefined,
+            'playerDestroy'
           )
         } else {
           this.states.delete(player.guildId)
@@ -491,13 +516,14 @@ class VoiceManager {
         }
         if (!isTwentyFourSevenEnabled(guildId)) return
         // Don't fight Aqualink's built-in recovery/reconnection
-        if ((player as Record<string, unknown>)?.['_reconnecting']) return
+        if (isPlayerRecovering(player)) return
 
         this.scheduleRejoin(
           client,
           guildId,
           player?.voiceChannel ?? undefined,
-          player?.textChannel ?? undefined
+          player?.textChannel ?? undefined,
+          'socketClosed'
         )
       }
     }
@@ -559,11 +585,13 @@ class VoiceManager {
         botId && userId === botId && oldState?.channelId && !newState?.channelId
 
       if (botLeft) {
+        if (isPlayerRecovering(player)) return
         this.scheduleRejoin(
           client,
           guildId,
           player?.voiceChannel ?? oldState.channelId ?? undefined,
-          player?.textChannel ?? undefined
+          player?.textChannel ?? undefined,
+          'voiceStateUpdate'
         )
         return
       }
@@ -575,7 +603,8 @@ class VoiceManager {
             client,
             guildId,
             pair.voiceChannelId,
-            pair.textChannelId || undefined
+            pair.textChannelId || undefined,
+            'voiceStateUpdate'
           )
         return
       }
@@ -590,41 +619,88 @@ class VoiceManager {
     client: VoiceClientLike,
     guildId: string,
     voiceId?: string,
-    textId?: string
+    textId?: string,
+    source: RecoverySource = 'retry',
+    minimumDelay = 0
   ) {
-    const delay = this.breaker.getDelay(guildId)
-    if (delay < 0) {
+    const breakerDelay = this.breaker.getDelay(guildId)
+    if (breakerDelay < 0) {
       this.handleRejoinGiveUp(guildId)
       return
     }
 
-    this.setTimeout(
-      guildId,
-      () => {
-        if (!this.setState(guildId, STATE_REJOINING)) return
-        void (async () => {
-          let outcome: RejoinOutcome = 'retry'
-          try {
-            outcome = await this.rejoinChannel(client, guildId, voiceId, textId)
-          } catch {
-            outcome = 'retry'
-          }
+    this.clearTimeout(guildId)
+    const delay = Math.max(breakerDelay, minimumDelay)
+    const dueAt = Date.now() + delay
+    const existingJob = this.recoveryJobs.get(guildId)
 
-          if (outcome === 'connected') {
-            this.breaker.recordResult(guildId, true)
-            this.setState(guildId, STATE_IDLE)
-            return
-          }
+    if (existingJob) {
+      existingJob.client = client
+      existingJob.source = source
+      if (voiceId !== undefined) existingJob.voiceId = voiceId
+      if (textId !== undefined) existingJob.textId = textId
+      if (existingJob.dueAt <= dueAt) return
+      _functions.clearTimer(existingJob.timer)
+    }
 
+    const timer = _functions.unrefTimeout(() => {
+      const job = this.recoveryJobs.get(guildId)
+      if (!job || job.timer !== timer) return
+      this.recoveryJobs.delete(guildId)
+
+      void (async () => {
+        if (!this.setState(guildId, STATE_REJOINING)) {
+          this.scheduleRejoin(
+            job.client,
+            guildId,
+            job.voiceId,
+            job.textId,
+            job.source,
+            REJOIN_DELAY
+          )
+          return
+        }
+
+        let outcome: RejoinOutcome = 'retry'
+        try {
+          outcome = await this.rejoinChannel(
+            job.client,
+            guildId,
+            job.voiceId,
+            job.textId
+          )
+        } catch {
+          outcome = 'retry'
+        }
+
+        if (outcome === 'connected') {
+          this.breaker.recordResult(guildId, true)
           this.setState(guildId, STATE_IDLE)
-          if (outcome === 'retry') {
-            this.breaker.recordResult(guildId, false)
-            this.scheduleRejoin(client, guildId, voiceId, textId)
-          }
-        })()
-      },
-      delay
-    )
+          return
+        }
+
+        this.setState(guildId, STATE_IDLE)
+        if (outcome === 'retry') {
+          this.breaker.recordResult(guildId, false)
+          this.scheduleRejoin(
+            job.client,
+            guildId,
+            job.voiceId,
+            job.textId,
+            'retry'
+          )
+        }
+      })()
+    }, delay)
+
+    this.recoveryJobs.set(guildId, {
+      client,
+      dueAt,
+      source,
+      timer,
+      ...(textId !== undefined ? { textId } : {}),
+      ...(voiceId !== undefined ? { voiceId } : {})
+    })
   }
 
   async rejoinChannel(
@@ -636,14 +712,19 @@ class VoiceManager {
     const pair = _functions.getChannelPair(guildId, voiceId, textId)
     if (!pair) return 'noop'
 
+    const players = client.aqua?.players as
+      | { get?: (guildId: string) => PlayerLike | undefined }
+      | undefined
+    let existing =
+      typeof players?.get === 'function' ? players.get(guildId) : undefined
+
+    if (isPlayerConnectedToChannel(existing, pair.voiceChannelId)) {
+      return 'connected'
+    }
+    if (isPlayerRecovering(existing)) return 'noop'
+
     const guild = await _functions.fetchGuild(this.guildCache, client, guildId)
     if (!guild) return 'retry'
-
-    const botId = _functions.getBotId(client)
-    if (botId) {
-      const botVc = _functions.getBotVoiceChannelId(guild, botId)
-      if (botVc === pair.voiceChannelId) return 'noop'
-    }
 
     const voiceChannel = await _functions.getVoiceChannel(
       guild,
@@ -651,11 +732,13 @@ class VoiceManager {
     )
     if (!voiceChannel) return 'retry'
 
-    const players = client.aqua?.players as
-      | { get?: (guildId: string) => PlayerLike | undefined }
-      | undefined
-    const existing =
+    existing =
       typeof players?.get === 'function' ? players.get(guildId) : undefined
+    if (isPlayerConnectedToChannel(existing, pair.voiceChannelId)) {
+      return 'connected'
+    }
+    if (isPlayerRecovering(existing)) return 'noop'
+
     const connectionOptions = {
       guildId,
       voiceChannel: pair.voiceChannelId,
@@ -694,6 +777,7 @@ class VoiceManager {
   scheduleDestroy(client: VoiceClientLike, player: PlayerLike) {
     if (!player.guildId) return
     const guildId = player.guildId
+    this.cancelRecovery(guildId)
     this.setTimeout(
       guildId,
       () => {
@@ -767,15 +851,68 @@ class VoiceManager {
     else this.clearTimeout(guildId)
   }
 
+  requestBulkRecovery(
+    client: VoiceClientLike,
+    source: 'gatewayReconnect' | 'gatewayResumed'
+  ) {
+    const now = Date.now()
+    if (now - this.lastBulkRecoveryAt < BULK_REJOIN_DEDUPE_WINDOW) return
+    this.lastBulkRecoveryAt = now
+
+    const settingsList = getAll247Settings()
+    if (!settingsList.length) return
+
+    const players = client.aqua?.players as
+      | { get?: (guildId: string) => PlayerLike | undefined }
+      | undefined
+    let scheduled = 0
+    let alreadyConnected = 0
+    let ownedByAqualink = 0
+
+    for (const settings of settingsList) {
+      const player =
+        typeof players?.get === 'function'
+          ? players.get(settings.guildId)
+          : undefined
+
+      if (isPlayerConnectedToChannel(player, settings.voiceChannelId)) {
+        this.cancelRecovery(settings.guildId)
+        this.breaker.recordResult(settings.guildId, true)
+        alreadyConnected++
+        continue
+      }
+      if (isPlayerRecovering(player)) {
+        ownedByAqualink++
+        continue
+      }
+
+      this.scheduleRejoin(
+        client,
+        settings.guildId,
+        settings.voiceChannelId,
+        settings.textChannelId || undefined,
+        source,
+        REJOIN_DELAY + scheduled * BULK_REJOIN_STAGGER
+      )
+      scheduled++
+    }
+
+    client.logger?.info(
+      `[VoiceManager] ${source}: ${alreadyConnected} already connected, ${ownedByAqualink} recovering in Aqualink, ${scheduled} queued.`
+    )
+  }
+
   cleanup() {
-    cleanupResumedReconnectTimers()
     this.stopped = true
     for (const t of this.timeouts.values()) _functions.clearTimer(t)
+    for (const job of this.recoveryJobs.values())
+      _functions.clearTimer(job.timer)
     for (const pending of this.pending.values())
       _functions.clearTimer(pending.timer)
     _functions.clearTimer(this.cleanupTimer)
 
     this.timeouts.clear()
+    this.recoveryJobs.clear()
     this.pending.clear()
     this.states.clear()
     this.guildCache.clear()
@@ -812,28 +949,11 @@ export const refresh247Cache = () => {
   manager.guildCache.clear()
 }
 
-/** Reconnect all 24/7 players across all guilds. */
-export const reconnectAllTwentyFourSevenPlayers = (client: VoiceClientLike) => {
-  const settingsList = getAll247Settings()
-  if (!settingsList.length) return
-
-  client.logger?.info(
-    `[VoiceManager] Re-verifying ${settingsList.length} 24/7 players.`
-  )
-
-  for (const settings of settingsList) {
-    const guildId = settings.guildId
-    manager.breaker.reset(guildId)
-    manager.autoDisabled247.delete(guildId)
-
-    manager.scheduleRejoin(
-      client,
-      guildId,
-      settings.voiceChannelId,
-      settings.textChannelId || undefined
-    )
-  }
-}
+/** Request one deduplicated, globally staggered 24/7 recovery sweep. */
+export const requestTwentyFourSevenRecovery = (
+  client: VoiceClientLike,
+  source: 'gatewayReconnect' | 'gatewayResumed'
+) => manager.requestBulkRecovery(client, source)
 
 /** Register VoiceManager event handlers on client. */
 export const registerVoiceManager = (client: VoiceClientLike) => {

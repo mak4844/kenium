@@ -18,8 +18,8 @@ import {
   syncKaraokeSessionTrack
 } from './src/commands/karaoke.ts'
 import {
-  reconnectAllTwentyFourSevenPlayers,
-  registerVoiceManager
+  registerVoiceManager,
+  requestTwentyFourSevenRecovery
 } from './src/events/voiceStateUpdate.ts'
 import type English from './src/languages/en.ts'
 import { middlewares } from './src/middlewares/middlewares.ts'
@@ -66,7 +66,12 @@ const client = new Client({
   onShardReconnect({ shardId }) {
     client.logger.info(`Shard ${shardId} reconnected`)
     try {
-      reconnectAllTwentyFourSevenPlayers(client as any)
+      requestTwentyFourSevenRecovery(
+        client as unknown as Parameters<
+          typeof requestTwentyFourSevenRecovery
+        >[0],
+        'gatewayReconnect'
+      )
     } catch (err) {
       client.logger.warn(
         `Failed to reconnect 24/7 players after shard ${shardId} reconnected: ${err}`
