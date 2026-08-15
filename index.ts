@@ -59,10 +59,12 @@ if (!id) {
 }
 
 const client = new Client({
-
+// allow intents so bot can read messages in the chat to listen to ! prefiv
+  intents: ['Guilds', 'GuildMessages', 'MessageContent','GuildVoiceStates'],
+  
   plugins,
   commands: {
-    prefix: () => ['!'],
+    prefix: () => ['!'], // add the ! prefix
     reply: () => true  },
   onShardDisconnect({ shardId, code, reason }) {
     client.logger.warn(`Shard ${shardId} disconnected: ${code} — ${reason}`)

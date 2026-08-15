@@ -13,5 +13,5 @@ export default config.bot({
     events: 'events',
     langs: 'languages'
   },
-  intents: ['Guilds', 'GuildMessages', 'DirectMessages', 'GuildVoiceStates']
+  intents: ['Guilds', 'GuildMessages', 'DirectMessages', 'GuildVoiceStates', 'MessageContent']
 })
