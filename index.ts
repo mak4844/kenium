@@ -59,7 +59,11 @@ if (!id) {
 }
 
 const client = new Client({
+
   plugins,
+  commands: {
+    prefix: () => ['!'],
+    reply: () => true  },
   onShardDisconnect({ shardId, code, reason }) {
     client.logger.warn(`Shard ${shardId} disconnected: ${code} — ${reason}`)
   },
@@ -525,4 +529,6 @@ declare module 'seyfert' {
     middlewares: typeof middlewares
     plugins: typeof plugins
   }
+
+  interface InternalOptions {withPrefix: true;} 
 }
